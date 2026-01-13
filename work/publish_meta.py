@@ -191,23 +191,33 @@ def process_file(audio_file, metadata_list, cache_root):
         now = datetime.utcnow().isoformat() + 'Z'
 
         if existing:
-            # 更新现有条目
+            # 更新现有条目 - 全部重写字段
             logger.info(f"更新条目: {metadata.get('title', '未知')}")
-            existing['title'] = metadata.get('title', existing.get('title'))
-            existing['artists'] = metadata.get('artists', existing.get('artists'))
-            existing['album'] = metadata.get('album', existing.get('album'))
-            existing['date'] = metadata.get('date', existing.get('date'))
-            existing['uslt'] = metadata.get('uslt', existing.get('uslt'))
+            
+            # 保留不变的字段
+            existing['audio_oid'] = audio_oid
+            existing['created_at'] = existing.get('created_at', now)
+            
+            # 更新所有可能变化的字段，空值则删除字段
+            for field in ['title', 'artists', 'album', 'date', 'uslt']:
+                value = metadata.get(field)
+                if value:
+                    existing[field] = value
+                elif field in existing:
+                    del existing[field]
+            
             existing['updated_at'] = now
-
-            # 检查封面是否变更
-            old_cover_oid = existing.get('cover_oid')
-            if new_cover_oid and new_cover_oid != old_cover_oid:
-                logger.info(f"封面已变更: {old_cover_oid[:16]}... -> {new_cover_oid[:16]}...")
+            
+            # 处理封面
+            if new_cover_oid:
                 existing['cover_oid'] = new_cover_oid
                 # 保存新封面到 cache
                 if cover_data:
                     save_to_cache(cover_data, new_cover_oid, cache_root, 'covers')
+            else:
+                # 如果新条目没有封面，删除旧的封面引用
+                if 'cover_oid' in existing:
+                    del existing['cover_oid']
         else:
             # 新增条目
             logger.info(f"新增条目: {metadata.get('title', '未知')}")
