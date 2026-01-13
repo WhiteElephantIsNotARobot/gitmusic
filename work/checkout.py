@@ -38,27 +38,27 @@ def embed_tags(audio_path, cover_path, metadata, output_path):
     try:
         # 先复制音频文件
         shutil.copy2(audio_path, output_path)
-        
+
         # 使用 mutagen 嵌入标签
         from mutagen.mp3 import MP3
         from mutagen.id3 import ID3, TPE1, TIT2, TALB, TDRC, USLT, APIC
-        
+
         audio = MP3(output_path)
-        
+
         # 确保有 ID3 标签
         if audio.tags is None:
             audio.add_tags()
-        
+
         # 清除现有标签
         audio.delete()
-        
+
         # 添加标签
         title = metadata.get('title', '')
         artists = metadata.get('artists', [])
         album = metadata.get('album', '')
         date = metadata.get('date', '')
         uslt = metadata.get('uslt', '')
-        
+
         if title:
             audio.tags.add(TIT2(encoding=3, text=title))
         if artists:
@@ -71,7 +71,7 @@ def embed_tags(audio_path, cover_path, metadata, output_path):
             audio.tags.add(TDRC(encoding=3, text=date))
         if uslt:
             audio.tags.add(USLT(encoding=3, lang='eng', desc='', text=uslt))
-        
+
         # 添加封面
         if cover_path and cover_path.exists():
             with open(cover_path, 'rb') as f:
@@ -83,7 +83,7 @@ def embed_tags(audio_path, cover_path, metadata, output_path):
                 desc='Cover',
                 data=cover_data
             ))
-        
+
         audio.save()
         return True
     except Exception as e:

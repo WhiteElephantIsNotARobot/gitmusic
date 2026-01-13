@@ -193,11 +193,11 @@ def process_file(audio_file, metadata_list, cache_root):
         if existing:
             # 更新现有条目 - 全部重写字段
             logger.info(f"更新条目: {metadata.get('title', '未知')}")
-            
+
             # 保留不变的字段
             existing['audio_oid'] = audio_oid
             existing['created_at'] = existing.get('created_at', now)
-            
+
             # 更新所有可能变化的字段，空值则删除字段
             for field in ['title', 'artists', 'album', 'date', 'uslt']:
                 value = metadata.get(field)
@@ -205,9 +205,9 @@ def process_file(audio_file, metadata_list, cache_root):
                     existing[field] = value
                 elif field in existing:
                     del existing[field]
-            
+
             existing['updated_at'] = now
-            
+
             # 处理封面
             if new_cover_oid:
                 existing['cover_oid'] = new_cover_oid
