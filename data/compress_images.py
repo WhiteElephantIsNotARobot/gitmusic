@@ -115,12 +115,6 @@ def main():
 
             shutil.move(str(temp_path), str(new_path))
 
-            # 删除旧文件
-            old_path.unlink(missing_ok=True)
-            old_dir = old_path.parent
-            if not any(old_dir.iterdir()):
-                old_dir.rmdir()
-
             # 更新 metadata
             metadata['cover_oid'] = f"sha256:{new_hash}"
             metadata['updated_at'] = metadata.get('updated_at', metadata.get('created_at', ''))
