@@ -57,6 +57,7 @@ def sync_upload(remote_user, remote_host, local_path, remote_path, max_retries=3
             result = subprocess.run(scp_cmd, capture_output=True, text=True, timeout=120)
 
             if result.returncode == 0:
+                logger.info(f"✓ 上传成功: {local_path.name}")
                 return True
             else:
                 if attempt < max_retries - 1:
@@ -94,6 +95,7 @@ def sync_download(remote_user, remote_host, remote_path, local_path, max_retries
             result = subprocess.run(scp_cmd, capture_output=True, text=True, timeout=120)
 
             if result.returncode == 0:
+                logger.info(f"✓ 下载成功: {local_path.name}")
                 return True
             else:
                 if attempt < max_retries - 1:
@@ -124,8 +126,8 @@ def main():
     parser = argparse.ArgumentParser(description="增量同步 cache 与远端 data（使用 SCP）")
     parser.add_argument("-u", "--user", required=True, help="远程用户名")
     parser.add_argument("-H", "--host", required=True, help="远程主机")
-    parser.add_argument("--local-root", default=str(Path(__file__).parent.parent.parent / "cache" / "data"), help="本地 cache/data 目录")
-    parser.add_argument("--remote-root", default="/srv/music/data", help="远端 data 目录")
+    parser.add_argument("--local-root", default=str(Path(__file__).parent.parent.parent / "cache"), help="本地 cache 根目录")
+    parser.add_argument("--remote-root", default="/srv/music/cache", help="远端 cache 根目录")
     parser.add_argument("--workers", type=int, default=4, help="并行工作进程数")
     parser.add_argument("--direction", choices=['both', 'upload', 'download'], default='both', help="同步方向")
     parser.add_argument("--retries", type=int, default=3, help="每个文件的重试次数")

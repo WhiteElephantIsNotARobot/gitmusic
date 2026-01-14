@@ -47,7 +47,7 @@ def calculate_hash(file_path):
 def main():
     """主函数"""
     cache_root = Path(__file__).parent.parent.parent / "cache"
-    covers_root = cache_root / 'data' / 'covers' / 'sha256'
+    covers_root = cache_root / 'covers' / 'sha256'
     metadata_file = Path(__file__).parent.parent / "metadata.jsonl"
 
     if not covers_root.exists():

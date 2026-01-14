@@ -26,9 +26,9 @@ def find_in_cache(oid, cache_root, data_type):
     subdir = hash_hex[:2]
 
     if data_type == 'audio':
-        path = cache_root / 'data' / 'objects' / 'sha256' / subdir / f"{hash_hex}.mp3"
+        path = cache_root / 'objects' / 'sha256' / subdir / f"{hash_hex}.mp3"
     else:
-        path = cache_root / 'data' / 'covers' / 'sha256' / subdir / f"{hash_hex}.jpg"
+        path = cache_root / 'covers' / 'sha256' / subdir / f"{hash_hex}.jpg"
 
     return path if path.exists() else None
 

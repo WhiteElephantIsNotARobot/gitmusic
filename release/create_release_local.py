@@ -48,7 +48,7 @@ def get_cache_path(audio_oid):
     oid_hex = audio_oid.split(':', 1)[1] if ':' in audio_oid else audio_oid
     subdir = oid_hex[:2]
     cache_root = Path(__file__).parent.parent.parent / "cache"
-    return cache_root / "data" / "objects" / "sha256" / subdir / f"{oid_hex}.mp3"
+    return cache_root / "objects" / "sha256" / subdir / f"{oid_hex}.mp3"
 
 
 def get_cover_path(cover_oid):
@@ -58,7 +58,7 @@ def get_cover_path(cover_oid):
     oid_hex = cover_oid.split(':', 1)[1] if ':' in cover_oid else cover_oid
     subdir = oid_hex[:2]
     cache_root = Path(__file__).parent.parent.parent / "cache"
-    return cache_root / "data" / "covers" / "sha256" / subdir / f"{oid_hex}.jpg"
+    return cache_root / "covers" / "sha256" / subdir / f"{oid_hex}.jpg"
 
 
 def create_release_item(metadata_item, output_dir):

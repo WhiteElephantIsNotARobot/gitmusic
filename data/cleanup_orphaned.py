@@ -44,10 +44,10 @@ def load_metadata(metadata_file):
 def find_orphaned_objects(cache_root, referenced_oids, data_type):
     """查找 cache 中未被引用的对象"""
     if data_type == 'audio':
-        search_dir = cache_root / 'data' / 'objects' / 'sha256'
+        search_dir = cache_root / 'objects' / 'sha256'
         ext = '.mp3'
     else:
-        search_dir = cache_root / 'data' / 'covers' / 'sha256'
+        search_dir = cache_root / 'covers' / 'sha256'
         ext = '.jpg'
 
     if not search_dir.exists():
@@ -109,12 +109,12 @@ def cleanup_orphaned(cache_root, audio_oids, cover_oids, dry_run=True):
             logger.error(f"删除失败 {path}: {e}")
 
     # 清理空目录
-    for subdir in (cache_root / 'data' / 'objects' / 'sha256').iterdir():
+    for subdir in (cache_root / 'objects' / 'sha256').iterdir():
         if subdir.is_dir() and not any(subdir.iterdir()):
             subdir.rmdir()
             logger.info(f"删除空目录: {subdir}")
 
-    for subdir in (cache_root / 'data' / 'covers' / 'sha256').iterdir():
+    for subdir in (cache_root / 'covers' / 'sha256').iterdir():
         if subdir.is_dir() and not any(subdir.iterdir()):
             subdir.rmdir()
             logger.info(f"删除空目录: {subdir}")

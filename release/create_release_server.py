@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 服务器端成品生成脚本
-从 /srv/music/data/objects 生成成品到 /srv/music/data/releases/
+从 /srv/music/cache 生成成品到 /srv/music/releases/
 """
 
 import os
@@ -77,8 +77,8 @@ def sanitize_filename(filename):
     return filename
 
 
-def find_object(oid, data_root):
-    """在 data 目录中查找对象"""
+def find_object(oid, cache_root):
+    """在 cache 目录中查找对象"""
     if not oid or not oid.startswith('sha256:'):
         return None
 
@@ -86,19 +86,19 @@ def find_object(oid, data_root):
     subdir = hash_hex[:2]
 
     # 查找音频
-    audio_path = data_root / 'objects' / 'sha256' / subdir / f"{hash_hex}.mp3"
+    audio_path = cache_root / 'objects' / 'sha256' / subdir / f"{hash_hex}.mp3"
     if audio_path.exists():
         return audio_path
 
     # 查找封面
-    cover_path = data_root / 'covers' / 'sha256' / subdir / f"{hash_hex}.jpg"
+    cover_path = cache_root / 'covers' / 'sha256' / subdir / f"{hash_hex}.jpg"
     if cover_path.exists():
         return cover_path
 
     return None
 
 
-def process_single_item(item, data_root, releases_root):
+def process_single_item(item, cache_root, releases_root):
     """处理单个 metadata 条目"""
     try:
         audio_oid = item.get('audio_oid')
@@ -106,7 +106,7 @@ def process_single_item(item, data_root, releases_root):
             return False
 
         # 查找音频文件
-        audio_path = find_object(audio_oid, data_root)
+        audio_path = find_object(audio_oid, cache_root)
         if not audio_path:
             logger.warning(f"音频文件不存在: {audio_oid}")
             return False
@@ -115,7 +115,7 @@ def process_single_item(item, data_root, releases_root):
         cover_oid = item.get('cover_oid')
         cover_path = None
         if cover_oid:
-            cover_path = find_object(cover_oid, data_root)
+            cover_path = find_object(cover_oid, cache_root)
 
         # 生成文件名
         filename = get_work_filename(item)
@@ -176,13 +176,13 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description='服务器端生成成品')
-    parser.add_argument('--data-root', default='/srv/music/data', help='数据根目录')
-    parser.add_argument('--releases-root', default='/srv/music/data/releases', help='成品目录')
+    parser.add_argument('--cache-root', default='/srv/music/cache', help='cache 根目录')
+    parser.add_argument('--releases-root', default='/srv/music/releases', help='成品目录')
     parser.add_argument('--metadata', help='指定 metadata.jsonl 路径（可选）')
     parser.add_argument('--only-changed', action='store_true', help='只处理自上次运行后更改的条目')
     args = parser.parse_args()
 
-    data_root = Path(args.data_root)
+    cache_root = Path(args.cache_root)
     releases_root = Path(args.releases_root)
 
     if args.metadata:
@@ -197,8 +197,8 @@ def main():
         logger.error(f"metadata.jsonl 不存在: {metadata_file}")
         return
 
-    if not data_root.exists():
-        logger.error(f"data 目录不存在: {data_root}")
+    if not cache_root.exists():
+        logger.error(f"cache 目录不存在: {cache_root}")
         return
 
     releases_root.mkdir(parents=True, exist_ok=True)
@@ -216,7 +216,7 @@ def main():
     # 处理每个条目
     success_count = 0
     for item in metadata_list:
-        if process_single_item(item, data_root, releases_root):
+        if process_single_item(item, cache_root, releases_root):
             success_count += 1
 
     logger.info(f"\n完成！成功: {success_count}/{len(metadata_list)}")

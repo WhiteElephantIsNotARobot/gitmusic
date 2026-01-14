@@ -255,10 +255,10 @@ def save_to_cache(data, oid, cache_root, data_type):
     subdir = hash_hex[:2]
 
     if data_type == 'objects':
-        target_dir = cache_root / 'data' / 'objects' / 'sha256' / subdir
+        target_dir = cache_root / 'objects' / 'sha256' / subdir
         ext = '.mp3'
     else:
-        target_dir = cache_root / 'data' / 'covers' / 'sha256' / subdir
+        target_dir = cache_root / 'covers' / 'sha256' / subdir
         ext = '.jpg'
 
     target_dir.mkdir(parents=True, exist_ok=True)

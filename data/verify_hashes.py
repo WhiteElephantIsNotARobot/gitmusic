@@ -30,8 +30,8 @@ def verify_file_hash(file_path, expected_hash):
 def main():
     """主函数"""
     cache_root = Path(__file__).parent.parent.parent / "cache"
-    objects_root = cache_root / 'data' / 'objects' / 'sha256'
-    covers_root = cache_root / 'data' / 'covers' / 'sha256'
+    objects_root = cache_root / 'objects' / 'sha256'
+    covers_root = cache_root / 'covers' / 'sha256'
 
     if not cache_root.exists():
         logger.error(f"cache 目录不存在: {cache_root}")
