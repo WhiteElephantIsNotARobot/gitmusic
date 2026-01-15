@@ -7,12 +7,19 @@
 import os
 import json
 import hashlib
-import subprocess
 import shutil
 import tempfile
 from pathlib import Path
 from datetime import datetime
 import logging
+
+# 尝试导入 mutagen
+try:
+    from mutagen.id3 import ID3, TPE1, TIT2, TALB, TDRC, USLT, APIC
+    from mutagen.mp3 import MP3
+except ImportError:
+    print("错误: mutagen 库未安装")
+    exit(1)
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
@@ -24,35 +31,72 @@ def embed_metadata(audio_path, metadata, cover_path=None):
     try:
         # 创建临时文件
         with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as tmp:
-            tmp_path = tmp.name
+            tmp_path = Path(tmp.name)
 
-        # 使用 ffmpeg 嵌入标签
-        cmd = [
-            'ffmpeg', '-i', str(audio_path),
-            '-c', 'copy',  # 复制流，不重新编码
-            '-metadata', f"title={metadata.get('title', '')}",
-            '-metadata', f"artist={', '.join(metadata.get('artists', []))}",
-            '-metadata', f"album={metadata.get('album', '')}",
-            '-metadata', f"date={metadata.get('date', '')}",
-        ]
+        # 复制音频到临时文件
+        shutil.copy2(audio_path, tmp_path)
 
-        # 如果有封面，嵌入封面
+        # 使用 mutagen 嵌入 metadata
+        audio = MP3(tmp_path)
+
+        # 确保有 ID3 标签
+        if audio.tags is None:
+            audio.add_tags()
+
+        # 清除现有 ID3 标签
+        audio.delete()
+
+        # 添加新的标签
+        # 艺术家
+        artists = metadata.get('artists', [])
+        if artists:
+            audio.tags.add(TPE1(encoding=3, text=artists if isinstance(artists, list) else [artists]))
+
+        # 标题
+        title = metadata.get('title')
+        if title:
+            audio.tags.add(TIT2(encoding=3, text=title))
+
+        # 专辑（如果没有，使用标题填充）
+        album = metadata.get('album')
+        if not album:
+            album = title
+        if album:
+            audio.tags.add(TALB(encoding=3, text=album))
+
+        # 日期
+        date = metadata.get('date')
+        if date:
+            audio.tags.add(TDRC(encoding=3, text=date))
+
+        # 歌词
+        uslt = metadata.get('uslt')
+        if uslt:
+            audio.tags.add(USLT(encoding=3, lang='eng', desc='', text=uslt))
+
+        # 封面
         if cover_path and cover_path.exists():
-            cmd.extend(['-i', str(cover_path), '-map', '0:a:0', '-map', '1:0'])
-            cmd.extend(['-c:v', 'copy', '-id3v2_version', '3', '-write_id3v1', '1'])
+            with open(cover_path, 'rb') as f:
+                cover_data = f.read()
+            audio.tags.add(APIC(
+                encoding=3,
+                mime='image/jpeg',
+                type=3,  # Cover (front)
+                desc='Cover',
+                data=cover_data
+            ))
 
-        cmd.append(tmp_path)
+        # 保存
+        audio.save()
 
-        result = subprocess.run(cmd, capture_output=True, check=True)
-
-        # 读取结果
+        # 读取结果数据
         with open(tmp_path, 'rb') as f:
             data = f.read()
 
         os.unlink(tmp_path)
         return data
 
-    except subprocess.CalledProcessError as e:
+    except Exception as e:
         logger.error(f"嵌入元数据失败: {e}")
         raise
 
