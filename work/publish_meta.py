@@ -168,8 +168,6 @@ def save_metadata(metadata_file, metadata_list):
 def process_file(audio_file, metadata_list, cache_root):
     """处理单个文件：计算哈希，更新或新增条目"""
     try:
-        logger.info(f"处理: {audio_file.name}")
-
         # 提取音频流和哈希
         audio_data, audio_hash = extract_audio_stream(audio_file)
         audio_oid = f"sha256:{audio_hash}"
@@ -190,8 +188,17 @@ def process_file(audio_file, metadata_list, cache_root):
 
         now = datetime.utcnow().isoformat() + 'Z'
 
+        result = {
+            'filename': audio_file.name,
+            'action': None,  # 'added' or 'updated'
+            'title': metadata.get('title', '未知'),
+            'artists': metadata.get('artists', []),
+            'audio_oid': audio_oid
+        }
+
         if existing:
-            # 更新现有条目 - 全部重写字段
+            # 更新现有条目
+            result['action'] = 'updated'
             logger.info(f"更新条目: {metadata.get('title', '未知')}")
 
             # 保留不变的字段
@@ -220,6 +227,7 @@ def process_file(audio_file, metadata_list, cache_root):
                     del existing['cover_oid']
         else:
             # 新增条目
+            result['action'] = 'added'
             logger.info(f"新增条目: {metadata.get('title', '未知')}")
             new_item = {
                 'audio_oid': audio_oid,
@@ -240,10 +248,10 @@ def process_file(audio_file, metadata_list, cache_root):
             if cover_data:
                 save_to_cache(cover_data, new_cover_oid, cache_root, 'covers')
 
-        return True
+        return result
     except Exception as e:
         logger.error(f"处理失败 {audio_file.name}: {e}")
-        return False
+        return None
 
 
 def save_to_cache(data, oid, cache_root, data_type):
@@ -309,35 +317,59 @@ def main():
     logger.info(f"现有 metadata 条目数: {len(metadata_list)}")
 
     # 处理每个文件（带进度条）
-    processed = []
+    processed_results = []
     total_files = len(audio_files)
     logger.info(f"开始处理 {total_files} 个文件...")
-    
+
     for idx, audio_file in enumerate(audio_files, 1):
         # 显示进度条
         progress = f"[{idx}/{total_files}]"
         logger.info(f"{progress} 处理: {audio_file.name}")
-        
-        if process_file(audio_file, metadata_list, cache_root):
-            processed.append(audio_file)
+
+        result = process_file(audio_file, metadata_list, cache_root)
+        if result:
+            processed_results.append(result)
             logger.info(f"{progress} ✓ 成功: {audio_file.name}")
         else:
             logger.error(f"{progress} ✗ 失败: {audio_file.name}")
 
-    if not processed:
+    if not processed_results:
         logger.error("没有文件被成功处理")
         return
 
     # 保存 metadata
     save_metadata(metadata_file, metadata_list)
     logger.info(f"Metadata 已保存到: {metadata_file}")
-    logger.info(f"处理成功: {len(processed)}/{len(audio_files)} 个文件")
+
+    # 统计结果
+    added_count = sum(1 for r in processed_results if r['action'] == 'added')
+    updated_count = sum(1 for r in processed_results if r['action'] == 'updated')
+    logger.info(f"处理成功: {len(processed_results)}/{len(audio_files)} 个文件")
+    logger.info(f"  新增: {added_count} 个")
+    logger.info(f"  更新: {updated_count} 个")
+
+    # 显示详细列表
+    if added_count > 0:
+        logger.info("\n【新增条目列表】")
+        for r in processed_results:
+            if r['action'] == 'added':
+                artists = ', '.join(r['artists'])
+                logger.info(f"  • {artists} - {r['title']}")
+
+    if updated_count > 0:
+        logger.info("\n【更新条目列表】")
+        for r in processed_results:
+            if r['action'] == 'updated':
+                artists = ', '.join(r['artists'])
+                logger.info(f"  • {artists} - {r['title']}")
 
     # 删除 work 中的文件
     logger.info("删除已处理的work文件...")
-    for f in processed:
-        f.unlink()
-        logger.info(f"已删除: {f.name}")
+    for result in processed_results:
+        work_file = work_dir / result['filename']
+        if work_file.exists():
+            work_file.unlink()
+            logger.info(f"已删除: {result['filename']}")
 
     # 删除空文件夹
     logger.info("清理空文件夹...")
@@ -351,7 +383,7 @@ def main():
                         logger.info(f"删除空文件夹: {dir_path.relative_to(path)}")
                 except OSError:
                     pass  # 目录非空或其他错误
-    
+
     remove_empty_dirs(work_dir)
 
     # Git 操作
@@ -363,8 +395,8 @@ def main():
         subprocess.run(['git', 'add', 'metadata.jsonl'], check=False)
 
         # 提交
-        if processed:
-            commit_msg = f"Update metadata ({len(processed)} files)"
+        if processed_results:
+            commit_msg = f"Update metadata ({len(processed_results)} files)"
             subprocess.run(['git', 'commit', '-m', commit_msg], check=False)
 
         # 推送

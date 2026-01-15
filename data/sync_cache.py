@@ -127,7 +127,7 @@ def main():
     parser.add_argument("-u", "--user", required=True, help="远程用户名")
     parser.add_argument("-H", "--host", required=True, help="远程主机")
     parser.add_argument("--local-root", default=str(Path(__file__).parent.parent.parent / "cache"), help="本地 cache 根目录")
-    parser.add_argument("--remote-root", default="/srv/music/cache", help="远端 cache 根目录")
+    parser.add_argument("--remote-root", default="/srv/music/data", help="远端 data 根目录（注意：远端是data，不是cache）")
     parser.add_argument("--workers", type=int, default=4, help="并行工作进程数")
     parser.add_argument("--direction", choices=['both', 'upload', 'download'], default='both', help="同步方向")
     parser.add_argument("--retries", type=int, default=3, help="每个文件的重试次数")
@@ -140,6 +140,8 @@ def main():
         return
 
     logger.info("开始同步...")
+    logger.info(f"本地 cache: {local_root}")
+    logger.info(f"远端 data: {args.user}@{args.host}:{args.remote_root}")
 
     # 获取文件列表
     logger.info("获取远端文件列表...")
@@ -157,7 +159,7 @@ def main():
     logger.info(f"需要上传: {len(to_upload)} 个文件")
     logger.info(f"需要下载: {len(to_download)} 个文件")
 
-    # 上传
+    # 上传（带进度条）
     if to_upload and args.direction in ['both', 'upload']:
         logger.info("开始上传...")
         upload_tasks = []
@@ -167,16 +169,25 @@ def main():
             upload_tasks.append((local_path, remote_path))
 
         success = 0
+        total = len(upload_tasks)
         with ThreadPoolExecutor(max_workers=args.workers) as executor:
-            futures = [executor.submit(sync_upload, args.user, args.host, local, remote, args.retries)
-                      for local, remote in upload_tasks]
-            for future in as_completed(futures):
+            futures = []
+            for local, remote in upload_tasks:
+                # 提交任务时显示进度
+                idx = len(futures) + 1
+                logger.info(f"[{idx}/{total}] 队列: {local.name}")
+                future = executor.submit(sync_upload, args.user, args.host, local, remote, args.retries)
+                futures.append(future)
+
+            for idx, future in enumerate(as_completed(futures), 1):
                 if future.result():
                     success += 1
+                else:
+                    logger.error(f"[{idx}/{total}] 失败")
 
-        logger.info(f"上传完成: {success}/{len(upload_tasks)}")
+        logger.info(f"上传完成: {success}/{total}")
 
-    # 下载
+    # 下载（带进度条）
     if to_download and args.direction in ['both', 'download']:
         logger.info("开始下载...")
         download_tasks = []
@@ -186,14 +197,23 @@ def main():
             download_tasks.append((remote_path, local_path))
 
         success = 0
+        total = len(download_tasks)
         with ThreadPoolExecutor(max_workers=args.workers) as executor:
-            futures = [executor.submit(sync_download, args.user, args.host, remote, local, args.retries)
-                      for remote, local in download_tasks]
-            for future in as_completed(futures):
+            futures = []
+            for remote, local in download_tasks:
+                # 提交任务时显示进度
+                idx = len(futures) + 1
+                logger.info(f"[{idx}/{total}] 队列: {local.name}")
+                future = executor.submit(sync_download, args.user, args.host, remote, local, args.retries)
+                futures.append(future)
+
+            for idx, future in enumerate(as_completed(futures), 1):
                 if future.result():
                     success += 1
+                else:
+                    logger.error(f"[{idx}/{total}] 失败")
 
-        logger.info(f"下载完成: {success}/{len(download_tasks)}")
+        logger.info(f"下载完成: {success}/{total}")
 
     if not to_upload and not to_download:
         logger.info("无需同步，数据已一致")
