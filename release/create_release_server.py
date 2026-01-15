@@ -40,7 +40,9 @@ def embed_metadata(audio_path, metadata, cover_path=None):
         shutil.copy2(audio_path, tmp_path)
 
         # 使用 mutagen 嵌入 metadata
-        audio = MP3(str(tmp_path))
+        # 显式转换为绝对路径字符串，并确保没有 null byte
+        abs_tmp_path = os.path.abspath(str(tmp_path))
+        audio = MP3(abs_tmp_path)
 
         # 确保有 ID3 标签
         if audio.tags is None:
