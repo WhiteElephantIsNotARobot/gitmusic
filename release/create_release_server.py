@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 服务器端成品生成脚本
-从 /srv/music/cache 生成成品到 /srv/music/releases/
+从 /srv/music/data/objects 生成成品到 /srv/music/data/releases/
 """
 
 import os
@@ -12,81 +12,19 @@ import tempfile
 from pathlib import Path
 from datetime import datetime
 import logging
-import sys
-import threading
-from io import StringIO
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# 配置日志
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # 尝试导入 mutagen
 try:
     from mutagen.id3 import ID3, TPE1, TIT2, TALB, TDRC, USLT, APIC
     from mutagen.mp3 import MP3
 except ImportError:
-    print("错误: mutagen 库未安装")
+    logger.error("错误: mutagen 库未安装")
     exit(1)
-
-# 尝试导入 tqdm
-try:
-    from tqdm import tqdm
-except ImportError:
-    print("错误: tqdm 库未安装，请运行 pip install tqdm", file=sys.stderr)
-    exit(1)
-
-
-class BottomProgressBar:
-    """底部固定进度条管理器（支持日志平滑滚动）"""
-    def __init__(self):
-        self.progress_bar = None
-        self.lock = threading.Lock()
-
-    def set_progress(self, current, total, desc=""):
-        """设置进度"""
-        with self.lock:
-            if self.progress_bar is None:
-                self.progress_bar = tqdm(total=total, desc=desc, unit="file",
-                                       bar_format='{desc} {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]',
-                                       file=sys.stdout, dynamic_ncols=True)
-            else:
-                if self.progress_bar.desc != desc:
-                    self.progress_bar.set_description(desc)
-                self.progress_bar.total = total
-                self.progress_bar.n = current
-                self.progress_bar.refresh()
-
-    def write_log(self, message):
-        """通过tqdm安全地打印日志，不破坏进度条"""
-        with self.lock:
-            if self.progress_bar:
-                self.progress_bar.write(message)
-            else:
-                print(message)
-
-    def close(self):
-        """关闭进度条"""
-        with self.lock:
-            if self.progress_bar:
-                self.progress_bar.close()
-                self.progress_bar = None
-
-
-# 创建全局进度管理器
-progress_mgr = BottomProgressBar()
-
-
-class TqdmLogHandler(logging.Handler):
-    """将日志重定向到tqdm.write的处理器"""
-    def emit(self, record):
-        try:
-            msg = self.format(record)
-            progress_mgr.write_log(msg)
-        except Exception:
-            self.handleError(record)
-
-
-# 配置日志
-handler = TqdmLogHandler()
-handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
-logging.basicConfig(level=logging.INFO, handlers=[handler])
-logger = logging.getLogger(__name__)
 
 
 def embed_metadata(audio_path, metadata, cover_path=None):
@@ -178,14 +116,14 @@ def get_work_filename(metadata):
 
 def sanitize_filename(filename):
     """清理文件名中的非法字符"""
-    # 替换 Windows 非法字符
+    # 替换 Windows/Linux 非法字符
     for char in ['<', '>', ':', '"', '/', '\\', '|', '?', '*']:
         filename = filename.replace(char, '_')
     return filename
 
 
-def find_object(oid, cache_root):
-    """在 cache 目录中查找对象"""
+def find_object(oid, data_root):
+    """在 data 目录中查找对象"""
     if not oid or not oid.startswith('sha256:'):
         return None
 
@@ -193,27 +131,36 @@ def find_object(oid, cache_root):
     subdir = hash_hex[:2]
 
     # 查找音频
-    audio_path = cache_root / 'objects' / 'sha256' / subdir / f"{hash_hex}.mp3"
+    audio_path = data_root / 'objects' / 'sha256' / subdir / f"{hash_hex}.mp3"
     if audio_path.exists():
         return audio_path
 
     # 查找封面
-    cover_path = cache_root / 'covers' / 'sha256' / subdir / f"{hash_hex}.jpg"
+    cover_path = data_root / 'covers' / 'sha256' / subdir / f"{hash_hex}.jpg"
     if cover_path.exists():
         return cover_path
 
     return None
 
 
-def process_single_item(item, cache_root, releases_root):
+def process_single_item(item, data_root, releases_root, only_changed=False):
     """处理单个 metadata 条目"""
     try:
         audio_oid = item.get('audio_oid')
         if not audio_oid:
             return False
 
+        # 生成文件名
+        filename = get_work_filename(item)
+        filename = sanitize_filename(filename)
+        dest_path = releases_root / filename
+
+        # 如果开启了 only_changed，且文件已存在，则跳过
+        if only_changed and dest_path.exists():
+            return True
+
         # 查找音频文件
-        audio_path = find_object(audio_oid, cache_root)
+        audio_path = find_object(audio_oid, data_root)
         if not audio_path:
             logger.warning(f"音频文件不存在: {audio_oid}")
             return False
@@ -222,28 +169,9 @@ def process_single_item(item, cache_root, releases_root):
         cover_oid = item.get('cover_oid')
         cover_path = None
         if cover_oid:
-            cover_path = find_object(cover_oid, cache_root)
-
-        # 生成文件名
-        filename = get_work_filename(item)
-        filename = sanitize_filename(filename)
-        dest_path = releases_root / filename
-
-        # 检查是否已存在且内容相同
-        if dest_path.exists():
-            # 计算现有文件的哈希
-            with open(dest_path, 'rb') as f:
-                existing_hash = hashlib.sha256(f.read()).hexdigest()
-
-            with open(audio_path, 'rb') as f:
-                new_hash = hashlib.sha256(f.read()).hexdigest()
-
-            if existing_hash == new_hash:
-                logger.info(f"已存在且相同: {filename}")
-                return True
+            cover_path = find_object(cover_oid, data_root)
 
         # 嵌入元数据
-        logger.info(f"生成: {filename}")
         data = embed_metadata(audio_path, item, cover_path)
 
         # 写入临时文件
@@ -253,7 +181,7 @@ def process_single_item(item, cache_root, releases_root):
 
         # 原子替换
         shutil.move(str(temp_path), str(dest_path))
-        logger.info(f"完成: {filename}")
+        logger.info(f"✓ 生成: {filename}")
 
         return True
 
@@ -283,13 +211,14 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description='服务器端生成成品')
-    parser.add_argument('--cache-root', default='/srv/music/cache', help='cache 根目录')
-    parser.add_argument('--releases-root', default='/srv/music/releases', help='成品目录')
+    parser.add_argument('--data-root', default='/srv/music/data', help='数据根目录')
+    parser.add_argument('--releases-root', default='/srv/music/data/releases', help='成品目录')
     parser.add_argument('--metadata', help='指定 metadata.jsonl 路径（可选）')
-    parser.add_argument('--only-changed', action='store_true', help='只处理自上次运行后更改的条目')
+    parser.add_argument('--only-changed', action='store_true', help='只处理不存在的条目')
+    parser.add_argument('--workers', type=int, default=4, help='并行工作进程数')
     args = parser.parse_args()
 
-    cache_root = Path(args.cache_root)
+    data_root = Path(args.data_root)
     releases_root = Path(args.releases_root)
 
     if args.metadata:
@@ -298,14 +227,14 @@ def main():
         # 尝试从当前目录或上级目录查找
         metadata_file = Path('metadata.jsonl')
         if not metadata_file.exists():
-            metadata_file = Path('../metadata.jsonl')
+            metadata_file = Path(__file__).parent.parent / 'metadata.jsonl'
 
     if not metadata_file.exists():
         logger.error(f"metadata.jsonl 不存在: {metadata_file}")
         return
 
-    if not cache_root.exists():
-        logger.error(f"cache 目录不存在: {cache_root}")
+    if not data_root.exists():
+        logger.error(f"数据目录不存在: {data_root}")
         return
 
     releases_root.mkdir(parents=True, exist_ok=True)
@@ -314,31 +243,16 @@ def main():
     metadata_list = load_metadata(metadata_file)
     logger.info(f"加载 {len(metadata_list)} 个条目")
 
-    # 如果只处理更改的条目，需要记录状态
-    if args.only_changed:
-        # 这里简化处理：处理所有条目
-        # 实际可以记录最后处理时间或哈希
-        pass
-
-    # 处理每个条目
+    # 并行处理
     success_count = 0
-    total_count = len(metadata_list)
-
-    if total_count > 0:
-        # 创建进度条（固定描述，不随文件变化）
-        progress_mgr.set_progress(0, total_count, "生成中")
-
-        for idx, item in enumerate(metadata_list, 1):
-            # 只更新进度，不更新描述
-            progress_mgr.set_progress(idx, total_count, "生成中")
-
-            if process_single_item(item, cache_root, releases_root):
+    with ThreadPoolExecutor(max_workers=args.workers) as executor:
+        futures = [executor.submit(process_single_item, item, data_root, releases_root, args.only_changed) for item in metadata_list]
+        
+        for future in as_completed(futures):
+            if future.result():
                 success_count += 1
 
-        # 关闭进度条
-        progress_mgr.close()
-
-    logger.info(f"\n完成！成功: {success_count}/{total_count}")
+    logger.info(f"完成！成功: {success_count}/{len(metadata_list)}")
     logger.info(f"成品目录: {releases_root}")
 
 
