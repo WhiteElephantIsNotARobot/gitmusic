@@ -6,6 +6,7 @@
 
 import json
 import shutil
+import subprocess
 from pathlib import Path
 import logging
 import sys
@@ -115,14 +116,14 @@ def find_orphaned_objects(base_dir, referenced_oids, data_type, is_remote=False,
         ext = '.jpg'
 
     orphaned = []
-    
+
     if is_remote:
         try:
             ssh_target = f"{remote_user}@{remote_host}"
             remote_path = f"{base_dir}/{rel_path}"
-            # 获取远程文件列表
+            # 获取远程文件列表，显式指定 utf-8 编码
             cmd = ['ssh', ssh_target, f"find {remote_path} -name '*{ext}' 2>/dev/null"]
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True, encoding='utf-8')
             for line in result.stdout.splitlines():
                 full_path = line.strip()
                 if not full_path: continue
@@ -153,7 +154,7 @@ def cleanup_orphaned(cache_root, audio_oids, cover_oids, dry_run=True, remote_us
     logger.info("检查本地孤立对象...")
     orphaned_audio_local = find_orphaned_objects(cache_root, audio_oids, 'audio')
     orphaned_covers_local = find_orphaned_objects(cache_root, cover_oids, 'cover')
-    
+
     # 2. 远程清理
     orphaned_audio_remote = []
     orphaned_covers_remote = []

@@ -84,11 +84,13 @@ def get_remote_file_list(remote_user, remote_host, remote_base):
     """获取远端文件列表"""
     try:
         ssh_target = f"{remote_user}@{remote_host}"
+        # 使用 find 命令获取文件列表，排除 releases 目录
         cmd = [
             'ssh', ssh_target,
-            f'find {remote_base} -type f 2>/dev/null | sed "s|{remote_base}/||"'
+            f'find {remote_base} -path "{remote_base}/releases" -prune -o -type f -print | sed "s|{remote_base}/||"'
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        # 显式指定使用 utf-8 编码读取输出
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, encoding='utf-8')
         return set(line.strip() for line in result.stdout.split('\n') if line.strip())
     except Exception as e:
         logger.error(f"获取远端文件列表失败: {e}")
