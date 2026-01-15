@@ -247,7 +247,7 @@ def main():
     success_count = 0
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
         futures = [executor.submit(process_single_item, item, data_root, releases_root, args.only_changed) for item in metadata_list]
-        
+
         for future in as_completed(futures):
             if future.result():
                 success_count += 1

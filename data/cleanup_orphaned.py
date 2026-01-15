@@ -105,120 +105,137 @@ def load_metadata(metadata_file):
     return audio_oids, cover_oids
 
 
-def find_orphaned_objects(cache_root, referenced_oids, data_type):
-    """查找 cache 中未被引用的对象"""
+def find_orphaned_objects(base_dir, referenced_oids, data_type, is_remote=False, remote_user=None, remote_host=None):
+    """查找未被引用的对象（支持本地和远程）"""
     if data_type == 'audio':
-        search_dir = cache_root / 'objects' / 'sha256'
+        rel_path = 'objects/sha256'
         ext = '.mp3'
     else:
-        search_dir = cache_root / 'covers' / 'sha256'
+        rel_path = 'covers/sha256'
         ext = '.jpg'
 
-    if not search_dir.exists():
-        return []
-
     orphaned = []
-    for subdir in search_dir.iterdir():
-        if not subdir.is_dir():
-            continue
-        for file_path in subdir.glob(f'*{ext}'):
-            oid = f"sha256:{file_path.stem}"
-            if oid not in referenced_oids:
-                orphaned.append(file_path)
+    
+    if is_remote:
+        try:
+            ssh_target = f"{remote_user}@{remote_host}"
+            remote_path = f"{base_dir}/{rel_path}"
+            # 获取远程文件列表
+            cmd = ['ssh', ssh_target, f"find {remote_path} -name '*{ext}' 2>/dev/null"]
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            for line in result.stdout.splitlines():
+                full_path = line.strip()
+                if not full_path: continue
+                filename = Path(full_path).stem
+                oid = f"sha256:{filename}"
+                if oid not in referenced_oids:
+                    orphaned.append(full_path)
+        except Exception as e:
+            logger.error(f"获取远端文件列表失败: {e}")
+    else:
+        search_dir = base_dir / rel_path
+        if not search_dir.exists():
+            return []
+        for subdir in search_dir.iterdir():
+            if not subdir.is_dir():
+                continue
+            for file_path in subdir.glob(f'*{ext}'):
+                oid = f"sha256:{file_path.stem}"
+                if oid not in referenced_oids:
+                    orphaned.append(file_path)
 
     return orphaned
 
 
-def cleanup_orphaned(cache_root, audio_oids, cover_oids, dry_run=True):
-    """清理孤立对象"""
-    # 查找孤立的音频文件
-    orphaned_audio = find_orphaned_objects(cache_root, audio_oids, 'audio')
-    logger.info(f"发现 {len(orphaned_audio)} 个孤立的音频文件")
+def cleanup_orphaned(cache_root, audio_oids, cover_oids, dry_run=True, remote_user=None, remote_host=None, remote_root=None):
+    """清理孤立对象（本地和可选的远程）"""
+    # 1. 本地清理
+    logger.info("检查本地孤立对象...")
+    orphaned_audio_local = find_orphaned_objects(cache_root, audio_oids, 'audio')
+    orphaned_covers_local = find_orphaned_objects(cache_root, cover_oids, 'cover')
+    
+    # 2. 远程清理
+    orphaned_audio_remote = []
+    orphaned_covers_remote = []
+    if remote_host:
+        logger.info(f"检查远端孤立对象 ({remote_host})...")
+        orphaned_audio_remote = find_orphaned_objects(remote_root, audio_oids, 'audio', True, remote_user, remote_host)
+        orphaned_covers_remote = find_orphaned_objects(remote_root, cover_oids, 'cover', True, remote_user, remote_host)
 
-    # 查找孤立的封面文件
-    orphaned_covers = find_orphaned_objects(cache_root, cover_oids, 'cover')
-    logger.info(f"发现 {len(orphaned_covers)} 个孤立的封面文件")
+    total_local = len(orphaned_audio_local) + len(orphaned_covers_local)
+    total_remote = len(orphaned_audio_remote) + len(orphaned_covers_remote)
 
-    total = len(orphaned_audio) + len(orphaned_covers)
-
-    if total == 0:
+    if total_local == 0 and total_remote == 0:
         logger.info("没有发现孤立对象，无需清理")
-        return 0
+        return 0, 0
 
     if dry_run:
         logger.info("=== 干运行模式，仅列出将删除的文件 ===")
-        for path in orphaned_audio:
-            logger.info(f"[音频] {path}")
-        for path in orphaned_covers:
-            logger.info(f"[封面] {path}")
-        logger.info(f"总计将删除 {total} 个文件")
-        return 0
+        if total_local > 0:
+            logger.info(f"本地待删除 ({total_local}):")
+            for p in orphaned_audio_local: logger.info(f"  [音频] {p}")
+            for p in orphaned_covers_local: logger.info(f"  [封面] {p}")
+        if total_remote > 0:
+            logger.info(f"远端待删除 ({total_remote}):")
+            for p in orphaned_audio_remote: logger.info(f"  [远程] {p}")
+        return 0, 0
 
-    # 执行删除
-    deleted = 0
-    total = len(orphaned_audio) + len(orphaned_covers)
-
-    if total > 0:
-        progress_mgr.set_progress(0, total, "删除中")
-
-        for idx, path in enumerate(orphaned_audio, 1):
+    # 执行本地删除
+    deleted_local = 0
+    if total_local > 0:
+        progress_mgr.set_progress(0, total_local, "本地清理")
+        for idx, path in enumerate(orphaned_audio_local + orphaned_covers_local, 1):
             try:
                 path.unlink()
-                logger.info(f"✓ 删除音频: {path.name}")
-                deleted += 1
+                logger.info(f"✓ 删除本地: {path.name}")
+                deleted_local += 1
             except Exception as e:
-                logger.error(f"✗ 删除失败 {path.name}: {e}")
-            progress_mgr.set_progress(idx, total, "删除中")
+                logger.error(f"✗ 删除本地失败 {path.name}: {e}")
+            progress_mgr.set_progress(idx, total_local, "本地清理")
 
-        for idx, path in enumerate(orphaned_covers, 1):
+    # 执行远程删除
+    deleted_remote = 0
+    if total_remote > 0:
+        progress_mgr.set_progress(0, total_remote, "远端清理")
+        ssh_target = f"{remote_user}@{remote_host}"
+        for idx, path in enumerate(orphaned_audio_remote + orphaned_covers_remote, 1):
             try:
-                path.unlink()
-                logger.info(f"✓ 删除封面: {path.name}")
-                deleted += 1
+                cmd = ['ssh', ssh_target, f"rm '{path}'"]
+                subprocess.run(cmd, check=True, capture_output=True)
+                logger.info(f"✓ 删除远端: {Path(path).name}")
+                deleted_remote += 1
             except Exception as e:
-                logger.error(f"✗ 删除失败 {path.name}: {e}")
-            progress_mgr.set_progress(len(orphaned_audio) + idx, total, "删除中")
+                logger.error(f"✗ 删除远端失败 {Path(path).name}: {e}")
+            progress_mgr.set_progress(idx, total_remote, "远端清理")
 
-    # 清理空目录
-    empty_dirs = []
+    # 清理本地空目录
+    for root in [cache_root / 'objects/sha256', cache_root / 'covers/sha256']:
+        if root.exists():
+            for subdir in root.iterdir():
+                if subdir.is_dir() and not any(subdir.iterdir()):
+                    try:
+                        subdir.rmdir()
+                        logger.info(f"清理空目录: {subdir.name}")
+                    except: pass
 
-    for subdir in (cache_root / 'objects' / 'sha256').iterdir():
-        if subdir.is_dir() and not any(subdir.iterdir()):
-            empty_dirs.append(subdir)
-
-    for subdir in (cache_root / 'covers' / 'sha256').iterdir():
-        if subdir.is_dir() and not any(subdir.iterdir()):
-            empty_dirs.append(subdir)
-
-    if empty_dirs:
-        progress_mgr.set_progress(0, len(empty_dirs), "删空目录")
-        for idx, subdir in enumerate(empty_dirs, 1):
-            try:
-                subdir.rmdir()
-            except Exception:
-                pass
-            progress_mgr.set_progress(idx, len(empty_dirs), "删空目录")
-
-    return deleted
+    return deleted_local, deleted_remote
 
 
 def main():
     import argparse
 
-    parser = argparse.ArgumentParser(description="清理 cache 中不在 metadata.jsonl 中的孤立对象")
+    parser = argparse.ArgumentParser(description="清理本地和远端 cache 中不在 metadata.jsonl 中的孤立对象")
     parser.add_argument("--cache-root", default=str(Path(__file__).parent.parent.parent / "cache"),
-                       help="cache 根目录，默认 ../cache")
-    parser.add_argument("--metadata", help="指定 metadata.jsonl 路径（可选）")
-    parser.add_argument("--dry-run", action="store_true", help="干运行模式，仅列出将删除的文件")
-    parser.add_argument("--confirm", action="store_true", help="确认执行删除（默认为干运行）")
+                       help="本地 cache 根目录")
+    parser.add_argument("-u", "--user", help="远程用户名")
+    parser.add_argument("-H", "--host", help="远程主机")
+    parser.add_argument("--remote-root", default="/srv/music/data", help="远端 data 根目录")
+    parser.add_argument("--metadata", help="指定 metadata.jsonl 路径")
+    parser.add_argument("--confirm", action="store_true", help="确认执行删除")
     args = parser.parse_args()
 
     cache_root = Path(args.cache_root)
-    if not cache_root.exists():
-        logger.error(f"cache 目录不存在: {cache_root}")
-        return
-
-    # 确定 metadata 文件
+    # ... 保持 metadata 加载逻辑不变 ...
     if args.metadata:
         metadata_file = Path(args.metadata)
     else:
@@ -229,26 +246,15 @@ def main():
         logger.error(f"metadata.jsonl 不存在: {metadata_file}")
         return
 
-    logger.info(f"加载 metadata: {metadata_file}")
     audio_oids, cover_oids = load_metadata(metadata_file)
     logger.info(f"metadata 中引用: {len(audio_oids)} 个音频, {len(cover_oids)} 个封面")
 
-    # 执行清理
     dry_run = not args.confirm
-    if dry_run:
-        logger.info("=== 干运行模式（使用 --confirm 执行实际删除）===")
-    else:
-        logger.info("=== 执行删除模式 ===")
+    del_local, del_remote = cleanup_orphaned(cache_root, audio_oids, cover_oids, dry_run, args.user, args.host, args.remote_root)
 
-    deleted = cleanup_orphaned(cache_root, audio_oids, cover_oids, dry_run)
-
-    # 关闭进度条
     progress_mgr.close()
-
-    if dry_run:
-        logger.info("干运行完成，未删除任何文件")
-    else:
-        logger.info(f"清理完成，共删除 {deleted} 个文件")
+    if not dry_run:
+        logger.info(f"清理完成: 本地删除 {del_local} 个, 远端删除 {del_remote} 个")
 
 
 if __name__ == "__main__":
