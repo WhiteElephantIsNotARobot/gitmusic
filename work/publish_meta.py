@@ -308,11 +308,21 @@ def main():
     metadata_list = load_metadata(metadata_file)
     logger.info(f"现有 metadata 条目数: {len(metadata_list)}")
 
-    # 处理每个文件
+    # 处理每个文件（带进度条）
     processed = []
-    for audio_file in audio_files:
+    total_files = len(audio_files)
+    logger.info(f"开始处理 {total_files} 个文件...")
+    
+    for idx, audio_file in enumerate(audio_files, 1):
+        # 显示进度条
+        progress = f"[{idx}/{total_files}]"
+        logger.info(f"{progress} 处理: {audio_file.name}")
+        
         if process_file(audio_file, metadata_list, cache_root):
             processed.append(audio_file)
+            logger.info(f"{progress} ✓ 成功: {audio_file.name}")
+        else:
+            logger.error(f"{progress} ✗ 失败: {audio_file.name}")
 
     if not processed:
         logger.error("没有文件被成功处理")
@@ -324,9 +334,25 @@ def main():
     logger.info(f"处理成功: {len(processed)}/{len(audio_files)} 个文件")
 
     # 删除 work 中的文件
+    logger.info("删除已处理的work文件...")
     for f in processed:
         f.unlink()
         logger.info(f"已删除: {f.name}")
+
+    # 删除空文件夹
+    logger.info("清理空文件夹...")
+    def remove_empty_dirs(path):
+        """递归删除空文件夹"""
+        for dir_path in sorted(path.rglob('*'), key=lambda x: len(x.parts), reverse=True):
+            if dir_path.is_dir():
+                try:
+                    if not any(dir_path.iterdir()):
+                        dir_path.rmdir()
+                        logger.info(f"删除空文件夹: {dir_path.relative_to(path)}")
+                except OSError:
+                    pass  # 目录非空或其他错误
+    
+    remove_empty_dirs(work_dir)
 
     # Git 操作
     if not args.no_git:
