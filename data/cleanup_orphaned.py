@@ -157,10 +157,10 @@ def cleanup_orphaned(cache_root, audio_oids, cover_oids, dry_run=True):
     # 执行删除
     deleted = 0
     total = len(orphaned_audio) + len(orphaned_covers)
-    
+
     if total > 0:
         progress_mgr.set_progress(0, total, "删除中")
-        
+
         for idx, path in enumerate(orphaned_audio, 1):
             try:
                 path.unlink()
@@ -181,7 +181,7 @@ def cleanup_orphaned(cache_root, audio_oids, cover_oids, dry_run=True):
 
     # 清理空目录
     empty_dirs = []
-    
+
     for subdir in (cache_root / 'objects' / 'sha256').iterdir():
         if subdir.is_dir() and not any(subdir.iterdir()):
             empty_dirs.append(subdir)
