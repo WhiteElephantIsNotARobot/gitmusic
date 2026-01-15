@@ -12,8 +12,17 @@ import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
+
+# 尝试导入 tqdm
+try:
+    from tqdm import tqdm
+    HAS_TQDM = True
+except ImportError:
+    logger.warning("警告: tqdm 库未安装，将使用简单进度显示")
+    logger.info("安装命令: pip install tqdm")
+    HAS_TQDM = False
 
 
 def get_remote_file_list(remote_user, remote_host, remote_base):
@@ -161,59 +170,91 @@ def main():
 
     # 上传（带进度条）
     if to_upload and args.direction in ['both', 'upload']:
-        logger.info("开始上传...")
         upload_tasks = []
         for rel_path in to_upload:
             local_path = local_root / rel_path
             remote_path = f"{args.remote_root}/{rel_path}"
             upload_tasks.append((local_path, remote_path))
 
-        success = 0
         total = len(upload_tasks)
-        with ThreadPoolExecutor(max_workers=args.workers) as executor:
-            futures = []
-            for local, remote in upload_tasks:
-                # 提交任务时显示进度
-                idx = len(futures) + 1
-                logger.info(f"[{idx}/{total}] 队列: {local.name}")
-                future = executor.submit(sync_upload, args.user, args.host, local, remote, args.retries)
-                futures.append(future)
+        logger.info(f"开始上传 {total} 个文件...")
 
-            for idx, future in enumerate(as_completed(futures), 1):
-                if future.result():
-                    success += 1
-                else:
-                    logger.error(f"[{idx}/{total}] 失败")
+        if HAS_TQDM and total > 0:
+            # 使用tqdm进度条
+            with ThreadPoolExecutor(max_workers=args.workers) as executor:
+                # 提交所有任务
+                futures = []
+                for local, remote in upload_tasks:
+                    future = executor.submit(sync_upload, args.user, args.host, local, remote, args.retries)
+                    futures.append(future)
 
-        logger.info(f"上传完成: {success}/{total}")
+                # 使用tqdm监控完成进度
+                success = 0
+                for future in tqdm(as_completed(futures), total=total, desc="上传中", unit="file", ncols=80):
+                    if future.result():
+                        success += 1
+                logger.info(f"上传完成: {success}/{total}")
+        else:
+            # 简单进度显示
+            success = 0
+            with ThreadPoolExecutor(max_workers=args.workers) as executor:
+                futures = []
+                for local, remote in upload_tasks:
+                    idx = len(futures) + 1
+                    logger.info(f"[{idx}/{total}] 队列: {local.name}")
+                    future = executor.submit(sync_upload, args.user, args.host, local, remote, args.retries)
+                    futures.append(future)
+
+                for idx, future in enumerate(as_completed(futures), 1):
+                    if future.result():
+                        success += 1
+                    else:
+                        logger.error(f"[{idx}/{total}] 失败")
+            logger.info(f"上传完成: {success}/{total}")
 
     # 下载（带进度条）
     if to_download and args.direction in ['both', 'download']:
-        logger.info("开始下载...")
         download_tasks = []
         for rel_path in to_download:
             remote_path = f"{args.remote_root}/{rel_path}"
             local_path = local_root / rel_path
             download_tasks.append((remote_path, local_path))
 
-        success = 0
         total = len(download_tasks)
-        with ThreadPoolExecutor(max_workers=args.workers) as executor:
-            futures = []
-            for remote, local in download_tasks:
-                # 提交任务时显示进度
-                idx = len(futures) + 1
-                logger.info(f"[{idx}/{total}] 队列: {local.name}")
-                future = executor.submit(sync_download, args.user, args.host, remote, local, args.retries)
-                futures.append(future)
+        logger.info(f"开始下载 {total} 个文件...")
 
-            for idx, future in enumerate(as_completed(futures), 1):
-                if future.result():
-                    success += 1
-                else:
-                    logger.error(f"[{idx}/{total}] 失败")
+        if HAS_TQDM and total > 0:
+            # 使用tqdm进度条
+            with ThreadPoolExecutor(max_workers=args.workers) as executor:
+                # 提交所有任务
+                futures = []
+                for remote, local in download_tasks:
+                    future = executor.submit(sync_download, args.user, args.host, remote, local, args.retries)
+                    futures.append(future)
 
-        logger.info(f"下载完成: {success}/{total}")
+                # 使用tqdm监控完成进度
+                success = 0
+                for future in tqdm(as_completed(futures), total=total, desc="下载中", unit="file", ncols=80):
+                    if future.result():
+                        success += 1
+                logger.info(f"下载完成: {success}/{total}")
+        else:
+            # 简单进度显示
+            success = 0
+            with ThreadPoolExecutor(max_workers=args.workers) as executor:
+                futures = []
+                for remote, local in download_tasks:
+                    idx = len(futures) + 1
+                    logger.info(f"[{idx}/{total}] 队列: {local.name}")
+                    future = executor.submit(sync_download, args.user, args.host, remote, local, args.retries)
+                    futures.append(future)
+
+                for idx, future in enumerate(as_completed(futures), 1):
+                    if future.result():
+                        success += 1
+                    else:
+                        logger.error(f"[{idx}/{total}] 失败")
+            logger.info(f"下载完成: {success}/{total}")
 
     if not to_upload and not to_download:
         logger.info("无需同步，数据已一致")

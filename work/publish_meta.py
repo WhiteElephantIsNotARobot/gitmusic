@@ -14,7 +14,7 @@ from datetime import datetime
 import logging
 
 # 配置日志
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
 
 # 尝试导入 mutagen
@@ -24,6 +24,15 @@ try:
 except ImportError:
     logger.error("错误: mutagen 库未安装")
     exit(1)
+
+# 尝试导入 tqdm
+try:
+    from tqdm import tqdm
+    HAS_TQDM = True
+except ImportError:
+    logger.warning("警告: tqdm 库未安装，将使用简单进度显示")
+    logger.info("安装命令: pip install tqdm")
+    HAS_TQDM = False
 
 
 def extract_audio_stream(audio_path):
@@ -319,19 +328,31 @@ def main():
     # 处理每个文件（带进度条）
     processed_results = []
     total_files = len(audio_files)
-    logger.info(f"开始处理 {total_files} 个文件...")
 
-    for idx, audio_file in enumerate(audio_files, 1):
-        # 显示进度条
-        progress = f"[{idx}/{total_files}]"
-        logger.info(f"{progress} 处理: {audio_file.name}")
-
-        result = process_file(audio_file, metadata_list, cache_root)
-        if result:
-            processed_results.append(result)
-            logger.info(f"{progress} ✓ 成功: {audio_file.name}")
-        else:
-            logger.error(f"{progress} ✗ 失败: {audio_file.name}")
+    if HAS_TQDM:
+        # 使用tqdm进度条
+        logger.info(f"开始处理 {total_files} 个文件...")
+        pbar = tqdm(audio_files, desc="处理中", unit="file", ncols=80)
+        for audio_file in pbar:
+            pbar.set_postfix_str(f"{audio_file.name[:30]}...")
+            result = process_file(audio_file, metadata_list, cache_root)
+            if result:
+                processed_results.append(result)
+                pbar.set_postfix_str(f"✓ {audio_file.name[:25]}")
+            else:
+                pbar.set_postfix_str(f"✗ {audio_file.name[:25]}")
+    else:
+        # 简单进度显示
+        logger.info(f"开始处理 {total_files} 个文件...")
+        for idx, audio_file in enumerate(audio_files, 1):
+            progress = f"[{idx}/{total_files}]"
+            logger.info(f"{progress} 处理: {audio_file.name}")
+            result = process_file(audio_file, metadata_list, cache_root)
+            if result:
+                processed_results.append(result)
+                logger.info(f"{progress} ✓ 成功: {audio_file.name}")
+            else:
+                logger.error(f"{progress} ✗ 失败: {audio_file.name}")
 
     if not processed_results:
         logger.error("没有文件被成功处理")
