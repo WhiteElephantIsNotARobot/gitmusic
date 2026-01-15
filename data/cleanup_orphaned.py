@@ -21,7 +21,7 @@ except ImportError:
 
 
 class BottomProgressBar:
-    """底部固定进度条管理器（简化版，不清除进度条）"""
+    """底部固定进度条管理器（支持日志平滑滚动）"""
     def __init__(self):
         self.progress_bar = None
         self.lock = threading.Lock()
@@ -32,11 +32,21 @@ class BottomProgressBar:
             if self.progress_bar is None:
                 self.progress_bar = tqdm(total=total, desc=desc, unit="file",
                                        bar_format='{desc} {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]',
-                                       file=sys.stdout)
+                                       file=sys.stdout, dynamic_ncols=True)
             else:
+                if self.progress_bar.desc != desc:
+                    self.progress_bar.set_description(desc)
                 self.progress_bar.total = total
-                self.progress_bar.set_description(desc)
-                self.progress_bar.update(current - self.progress_bar.n)
+                self.progress_bar.n = current
+                self.progress_bar.refresh()
+
+    def write_log(self, message):
+        """通过tqdm安全地打印日志，不破坏进度条"""
+        with self.lock:
+            if self.progress_bar:
+                self.progress_bar.write(message)
+            else:
+                print(message)
 
     def close(self):
         """关闭进度条"""
@@ -50,8 +60,20 @@ class BottomProgressBar:
 progress_mgr = BottomProgressBar()
 
 
-# 配置日志（使用默认处理器，不自定义）
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+class TqdmLogHandler(logging.Handler):
+    """将日志重定向到tqdm.write的处理器"""
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            progress_mgr.write_log(msg)
+        except Exception:
+            self.handleError(record)
+
+
+# 配置日志
+handler = TqdmLogHandler()
+handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
+logging.basicConfig(level=logging.INFO, handlers=[handler])
 logger = logging.getLogger(__name__)
 
 
