@@ -29,16 +29,18 @@ except ImportError:
 
 def embed_metadata(audio_path, metadata, cover_path=None):
     """嵌入元数据到音频文件"""
+    tmp_path = None
     try:
-        # 创建临时文件
-        with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as tmp:
-            tmp_path = Path(tmp.name)
+        # 创建临时文件，手动管理路径以避免 embedded null byte 问题
+        fd, path_str = tempfile.mkstemp(suffix='.mp3')
+        os.close(fd)
+        tmp_path = Path(path_str)
 
         # 复制音频到临时文件
         shutil.copy2(audio_path, tmp_path)
 
         # 使用 mutagen 嵌入 metadata
-        audio = MP3(tmp_path)
+        audio = MP3(str(tmp_path))
 
         # 确保有 ID3 标签
         if audio.tags is None:
@@ -94,11 +96,14 @@ def embed_metadata(audio_path, metadata, cover_path=None):
         with open(tmp_path, 'rb') as f:
             data = f.read()
 
-        os.unlink(tmp_path)
+        if tmp_path.exists():
+            os.unlink(tmp_path)
         return data
 
     except Exception as e:
         logger.error(f"嵌入元数据失败: {e}")
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
         raise
 
 
