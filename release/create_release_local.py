@@ -221,7 +221,7 @@ def create_release_item(metadata_item, output_dir):
         shutil.move(temp_path, final_temp)
         final_temp.replace(output_path)
 
-        logger.info(f"生成: {filename}")
+        logger.info(f"✓ 生成: {filename}")
         return True
 
     except Exception as e:

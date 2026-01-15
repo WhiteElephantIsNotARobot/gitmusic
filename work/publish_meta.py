@@ -11,6 +11,7 @@ import subprocess
 import shutil
 from pathlib import Path
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
 import sys
 import threading
@@ -213,10 +214,7 @@ def load_metadata(metadata_file):
 
 
 def save_metadata(metadata_file, metadata_list):
-    """保存 metadata.jsonl（按 audio_oid 排序）"""
-    # 按 audio_oid 排序
-    metadata_list.sort(key=lambda x: x.get('audio_oid', ''))
-
+    """保存 metadata.jsonl（保持原始顺序）"""
     # 写入临时文件
     temp_file = metadata_file.with_suffix('.tmp')
     with open(temp_file, 'w', encoding='utf-8') as f:
@@ -227,7 +225,7 @@ def save_metadata(metadata_file, metadata_list):
     shutil.move(str(temp_file), str(metadata_file))
 
 
-def process_file(audio_file, metadata_list, cache_root):
+def process_file(audio_file, rel_path, metadata_index, metadata_list, cache_root):
     """处理单个文件：计算哈希，更新或新增条目"""
     try:
         # 提取音频流和哈希
@@ -241,17 +239,14 @@ def process_file(audio_file, metadata_list, cache_root):
         # 解析元数据
         metadata = parse_metadata(audio_file)
 
-        # 查找是否已存在
-        existing = None
-        for item in metadata_list:
-            if item.get('audio_oid') == audio_oid:
-                existing = item
-                break
+        # 查找是否已存在 (使用索引字典)
+        existing = metadata_index.get(audio_oid)
 
         now = datetime.utcnow().isoformat() + 'Z'
 
         result = {
             'filename': audio_file.name,
+            'rel_path': str(rel_path),
             'action': None,  # 'added' or 'updated'
             'title': metadata.get('title', '未知'),
             'artists': metadata.get('artists', []),
@@ -261,7 +256,6 @@ def process_file(audio_file, metadata_list, cache_root):
         if existing:
             # 更新现有条目
             result['action'] = 'updated'
-            logger.info(f"更新条目: {metadata.get('title', '未知')}")
 
             # 保留不变的字段
             existing['audio_oid'] = audio_oid
@@ -296,7 +290,6 @@ def process_file(audio_file, metadata_list, cache_root):
         else:
             # 新增条目
             result['action'] = 'added'
-            logger.info(f"新增条目: {metadata.get('title', '未知')}")
             new_item = {
                 'audio_oid': audio_oid,
                 'created_at': now,
@@ -327,6 +320,7 @@ def process_file(audio_file, metadata_list, cache_root):
                 new_item['cover_oid'] = new_cover_oid
 
             metadata_list.append(new_item)
+            metadata_index[audio_oid] = new_item
 
             # 保存音频和封面到 cache
             save_to_cache(audio_data, audio_oid, cache_root, 'objects')
@@ -399,26 +393,45 @@ def main():
 
     # 加载现有 metadata
     metadata_list = load_metadata(metadata_file)
+    # 创建索引字典以加速查找
+    metadata_index = {item['audio_oid']: item for item in metadata_list if 'audio_oid' in item}
     logger.info(f"现有 metadata 条目数: {len(metadata_list)}")
 
-    # 处理每个文件（带进度条）
+    # 处理每个文件（并行处理）
     processed_results = []
     total_files = len(audio_files)
-    logger.info(f"开始处理 {total_files} 个文件...")
+    logger.info(f"开始处理 {total_files} 个文件 (并行模式)...")
 
     # 创建进度条（固定描述，不随文件变化）
     progress_mgr.set_progress(0, total_files, "处理中")
 
-    for idx, audio_file in enumerate(audio_files, 1):
-        # 只更新进度，不更新描述
-        progress_mgr.set_progress(idx, total_files, "处理中")
+    # 使用线程池并行处理 ffmpeg 任务
+    max_workers = min(os.cpu_count() or 4, 8)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_file = {
+            executor.submit(
+                process_file,
+                f,
+                f.relative_to(work_dir),
+                metadata_index,
+                metadata_list,
+                cache_root
+            ): f for f in audio_files
+        }
 
-        result = process_file(audio_file, metadata_list, cache_root)
-        if result:
-            processed_results.append(result)
-            logger.info(f"✓ 成功: {audio_file.name}")
-        else:
-            logger.error(f"✗ 失败: {audio_file.name}")
+        completed = 0
+        for future in as_completed(future_to_file):
+            completed += 1
+            result = future.result()
+            if result:
+                processed_results.append(result)
+                # 合并日志：动作 + 文件名
+                action_str = "更新" if result['action'] == 'updated' else "新增"
+                logger.info(f"{action_str}: {result['rel_path']}")
+            else:
+                logger.error(f"✗ 失败: {future_to_file[future].name}")
+
+            progress_mgr.set_progress(completed, total_files, "处理中")
 
     if not processed_results:
         logger.error("没有文件被成功处理")
@@ -429,26 +442,37 @@ def main():
     logger.info(f"Metadata 已保存到: {metadata_file}")
 
     # 统计结果
-    added_count = sum(1 for r in processed_results if r['action'] == 'added')
-    updated_count = sum(1 for r in processed_results if r['action'] == 'updated')
+    added_list = [r for r in processed_results if r['action'] == 'added']
+    updated_list = [r for r in processed_results if r['action'] == 'updated']
+    added_count = len(added_list)
+    updated_count = len(updated_list)
+
     logger.info(f"处理成功: {len(processed_results)}/{len(audio_files)} 个文件")
     logger.info(f"  新增: {added_count} 个")
     logger.info(f"  更新: {updated_count} 个")
 
-    # 显示详细列表
-    if added_count > 0:
+    # 智能列表输出：输出数量较少的那个列表
+    if added_count > 0 and updated_count > 0:
+        if added_count <= updated_count:
+            logger.info("\n【新增条目列表】(较少)")
+            for r in added_list:
+                artists = ', '.join(r['artists'])
+                logger.info(f"  • {artists} - {r['title']}")
+        else:
+            logger.info("\n【更新条目列表】(较少)")
+            for r in updated_list:
+                artists = ', '.join(r['artists'])
+                logger.info(f"  • {artists} - {r['title']}")
+    elif added_count > 0:
         logger.info("\n【新增条目列表】")
-        for r in processed_results:
-            if r['action'] == 'added':
-                artists = ', '.join(r['artists'])
-                logger.info(f"  • {artists} - {r['title']}")
-
-    if updated_count > 0:
+        for r in added_list:
+            artists = ', '.join(r['artists'])
+            logger.info(f"  • {artists} - {r['title']}")
+    elif updated_count > 0:
         logger.info("\n【更新条目列表】")
-        for r in processed_results:
-            if r['action'] == 'updated':
-                artists = ', '.join(r['artists'])
-                logger.info(f"  • {artists} - {r['title']}")
+        for r in updated_list:
+            artists = ', '.join(r['artists'])
+            logger.info(f"  • {artists} - {r['title']}")
 
     # 删除 work 中的文件
     logger.info("删除已处理的work文件...")
@@ -456,13 +480,10 @@ def main():
     progress_mgr.set_progress(0, total_del, "清理中")
 
     for idx, result in enumerate(processed_results, 1):
-        work_file = work_dir / result['filename']
+        work_file = work_dir / result['rel_path']
         if work_file.exists():
             work_file.unlink()
-            logger.info(f"已删除: {result['filename']}")
-        progress_mgr.set_progress(idx, total_del, "清理中")
-
-    # 删除空文件夹
+            logger.info(f"已删除: {result['rel_path']}")
     logger.info("清理空文件夹...")
 
     def remove_empty_dirs(path):

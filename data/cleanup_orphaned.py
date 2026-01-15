@@ -157,32 +157,31 @@ def cleanup_orphaned(cache_root, audio_oids, cover_oids, dry_run=True):
     # 执行删除
     deleted = 0
     total = len(orphaned_audio) + len(orphaned_covers)
-
+    
     if total > 0:
         progress_mgr.set_progress(0, total, "删除中")
-
+        
         for idx, path in enumerate(orphaned_audio, 1):
             try:
                 path.unlink()
-                logger.info(f"删除音频: {path}")
+                logger.info(f"✓ 删除音频: {path.name}")
                 deleted += 1
             except Exception as e:
-                logger.error(f"删除失败 {path}: {e}")
+                logger.error(f"✗ 删除失败 {path.name}: {e}")
             progress_mgr.set_progress(idx, total, "删除中")
 
         for idx, path in enumerate(orphaned_covers, 1):
             try:
                 path.unlink()
-                logger.info(f"删除封面: {path}")
+                logger.info(f"✓ 删除封面: {path.name}")
                 deleted += 1
             except Exception as e:
-                logger.error(f"删除失败 {path}: {e}")
+                logger.error(f"✗ 删除失败 {path.name}: {e}")
             progress_mgr.set_progress(len(orphaned_audio) + idx, total, "删除中")
 
     # 清理空目录
-    logger.info("清理空目录...")
     empty_dirs = []
-
+    
     for subdir in (cache_root / 'objects' / 'sha256').iterdir():
         if subdir.is_dir() and not any(subdir.iterdir()):
             empty_dirs.append(subdir)
@@ -194,8 +193,10 @@ def cleanup_orphaned(cache_root, audio_oids, cover_oids, dry_run=True):
     if empty_dirs:
         progress_mgr.set_progress(0, len(empty_dirs), "删空目录")
         for idx, subdir in enumerate(empty_dirs, 1):
-            subdir.rmdir()
-            logger.info(f"删除空目录: {subdir}")
+            try:
+                subdir.rmdir()
+            except Exception:
+                pass
             progress_mgr.set_progress(idx, len(empty_dirs), "删空目录")
 
     return deleted
