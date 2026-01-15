@@ -12,7 +12,49 @@ import subprocess
 from pathlib import Path
 from datetime import datetime
 import logging
+import sys
+import threading
+from io import StringIO
 
+# 尝试导入 tqdm
+try:
+    from tqdm import tqdm
+except ImportError:
+    print("错误: tqdm 库未安装，请运行 pip install tqdm", file=sys.stderr)
+    exit(1)
+
+
+class BottomProgressBar:
+    """底部固定进度条管理器（简化版，不清除进度条）"""
+    def __init__(self):
+        self.progress_bar = None
+        self.lock = threading.Lock()
+
+    def set_progress(self, current, total, desc=""):
+        """设置进度"""
+        with self.lock:
+            if self.progress_bar is None:
+                self.progress_bar = tqdm(total=total, desc=desc, unit="file",
+                                       bar_format='{desc} {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]',
+                                       file=sys.stdout)
+            else:
+                self.progress_bar.total = total
+                self.progress_bar.set_description(desc)
+                self.progress_bar.update(current - self.progress_bar.n)
+
+    def close(self):
+        """关闭进度条"""
+        with self.lock:
+            if self.progress_bar:
+                self.progress_bar.close()
+                self.progress_bar = None
+
+
+# 创建全局进度管理器
+progress_mgr = BottomProgressBar()
+
+
+# 配置日志（使用默认处理器，不自定义）
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -201,9 +243,26 @@ def main():
         total_count = len(metadata)
         logger.info(f"开始生成 {total_count} 个成品文件...")
 
-        for oid, item in metadata.items():
+        # 创建进度条
+        progress_mgr.set_progress(0, total_count, "生成中")
+
+        for idx, (oid, item) in enumerate(metadata.items(), 1):
+            # 更新进度条描述（截断长文件名）
+            artists = item.get('artists', [])
+            title = item.get('title', '未知')
+            if isinstance(artists, list):
+                artist_str = ', '.join(artists)
+            else:
+                artist_str = str(artists)
+            filename = f"{artist_str} - {title}"
+            short_name = filename[:20] + "..." if len(filename) > 20 else filename
+            progress_mgr.set_progress(idx, total_count, f"生成: {short_name}")
+
             if create_release_item(item, output_dir):
                 success_count += 1
+
+        # 关闭进度条
+        progress_mgr.close()
 
         logger.info(f"生成完成: {success_count}/{total_count} 成功")
 

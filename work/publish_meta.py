@@ -12,27 +12,58 @@ import shutil
 from pathlib import Path
 from datetime import datetime
 import logging
+import sys
+import threading
+from io import StringIO
 
-# 配置日志
-logging.basicConfig(level=logging.INFO, format='%(message)s')
-logger = logging.getLogger(__name__)
-
-# 尝试导入 mutagen
+# 尝试导入 mutagen 和 tqdm
 try:
     from mutagen import File
     from mutagen.id3 import ID3, APIC
 except ImportError:
-    logger.error("错误: mutagen 库未安装")
+    print("错误: mutagen 库未安装", file=sys.stderr)
     exit(1)
 
-# 尝试导入 tqdm
 try:
     from tqdm import tqdm
-    HAS_TQDM = True
 except ImportError:
-    logger.warning("警告: tqdm 库未安装，将使用简单进度显示")
-    logger.info("安装命令: pip install tqdm")
-    HAS_TQDM = False
+    print("错误: tqdm 库未安装，请运行 pip install tqdm", file=sys.stderr)
+    exit(1)
+
+
+class BottomProgressBar:
+    """底部固定进度条管理器（简化版，不清除进度条）"""
+    def __init__(self):
+        self.progress_bar = None
+        self.lock = threading.Lock()
+
+    def set_progress(self, current, total, desc=""):
+        """设置进度"""
+        with self.lock:
+            if self.progress_bar is None:
+                self.progress_bar = tqdm(total=total, desc=desc, unit="file",
+                                       bar_format='{desc} {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]',
+                                       file=sys.stdout)
+            else:
+                self.progress_bar.total = total
+                self.progress_bar.set_description(desc)
+                self.progress_bar.update(current - self.progress_bar.n)
+
+    def close(self):
+        """关闭进度条"""
+        with self.lock:
+            if self.progress_bar:
+                self.progress_bar.close()
+                self.progress_bar = None
+
+
+# 创建全局进度管理器
+progress_mgr = BottomProgressBar()
+
+
+# 配置日志（使用默认处理器，不自定义）
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 
 def extract_audio_stream(audio_path):
@@ -222,6 +253,12 @@ def process_file(audio_file, metadata_list, cache_root):
                 elif field in existing:
                     del existing[field]
 
+            # 确保 title 和 artists 不为空（如果为空则保留原有值或设置默认值）
+            if 'title' not in existing or not existing['title']:
+                existing['title'] = metadata.get('title', '未知')
+            if 'artists' not in existing or not existing['artists']:
+                existing['artists'] = metadata.get('artists', [])
+
             existing['updated_at'] = now
 
             # 处理封面
@@ -240,16 +277,33 @@ def process_file(audio_file, metadata_list, cache_root):
             logger.info(f"新增条目: {metadata.get('title', '未知')}")
             new_item = {
                 'audio_oid': audio_oid,
-                'title': metadata.get('title', '未知'),
-                'artists': metadata.get('artists', []),
-                'album': metadata.get('album', ''),
-                'date': metadata.get('date', ''),
-                'uslt': metadata.get('uslt', ''),
                 'created_at': now,
                 'updated_at': now
             }
+
+            # 只添加非空字段
+            if metadata.get('title'):
+                new_item['title'] = metadata['title']
+            else:
+                new_item['title'] = '未知'
+
+            if metadata.get('artists'):
+                new_item['artists'] = metadata['artists']
+            else:
+                new_item['artists'] = []
+
+            if metadata.get('album'):
+                new_item['album'] = metadata['album']
+
+            if metadata.get('date'):
+                new_item['date'] = metadata['date']
+
+            if metadata.get('uslt'):
+                new_item['uslt'] = metadata['uslt']
+
             if new_cover_oid:
                 new_item['cover_oid'] = new_cover_oid
+
             metadata_list.append(new_item)
 
             # 保存音频和封面到 cache
@@ -328,31 +382,22 @@ def main():
     # 处理每个文件（带进度条）
     processed_results = []
     total_files = len(audio_files)
+    logger.info(f"开始处理 {total_files} 个文件...")
 
-    if HAS_TQDM:
-        # 使用tqdm进度条
-        logger.info(f"开始处理 {total_files} 个文件...")
-        pbar = tqdm(audio_files, desc="处理中", unit="file", ncols=80)
-        for audio_file in pbar:
-            pbar.set_postfix_str(f"{audio_file.name[:30]}...")
-            result = process_file(audio_file, metadata_list, cache_root)
-            if result:
-                processed_results.append(result)
-                pbar.set_postfix_str(f"✓ {audio_file.name[:25]}")
-            else:
-                pbar.set_postfix_str(f"✗ {audio_file.name[:25]}")
-    else:
-        # 简单进度显示
-        logger.info(f"开始处理 {total_files} 个文件...")
-        for idx, audio_file in enumerate(audio_files, 1):
-            progress = f"[{idx}/{total_files}]"
-            logger.info(f"{progress} 处理: {audio_file.name}")
-            result = process_file(audio_file, metadata_list, cache_root)
-            if result:
-                processed_results.append(result)
-                logger.info(f"{progress} ✓ 成功: {audio_file.name}")
-            else:
-                logger.error(f"{progress} ✗ 失败: {audio_file.name}")
+    # 创建进度条
+    progress_mgr.set_progress(0, total_files, "处理中")
+
+    for idx, audio_file in enumerate(audio_files, 1):
+        # 更新进度条描述（截断长文件名）
+        short_name = audio_file.name[:20] + "..." if len(audio_file.name) > 20 else audio_file.name
+        progress_mgr.set_progress(idx, total_files, f"处理: {short_name}")
+
+        result = process_file(audio_file, metadata_list, cache_root)
+        if result:
+            processed_results.append(result)
+            logger.info(f"✓ 成功: {audio_file.name}")
+        else:
+            logger.error(f"✗ 失败: {audio_file.name}")
 
     if not processed_results:
         logger.error("没有文件被成功处理")
@@ -386,24 +431,36 @@ def main():
 
     # 删除 work 中的文件
     logger.info("删除已处理的work文件...")
-    for result in processed_results:
+    total_del = len(processed_results)
+    progress_mgr.set_progress(0, total_del, "清理中")
+
+    for idx, result in enumerate(processed_results, 1):
         work_file = work_dir / result['filename']
         if work_file.exists():
             work_file.unlink()
             logger.info(f"已删除: {result['filename']}")
+        progress_mgr.set_progress(idx, total_del, "清理中")
 
     # 删除空文件夹
     logger.info("清理空文件夹...")
+
     def remove_empty_dirs(path):
         """递归删除空文件夹"""
+        empty_dirs = []
         for dir_path in sorted(path.rglob('*'), key=lambda x: len(x.parts), reverse=True):
             if dir_path.is_dir():
                 try:
                     if not any(dir_path.iterdir()):
+                        empty_dirs.append(dir_path.relative_to(path))
                         dir_path.rmdir()
-                        logger.info(f"删除空文件夹: {dir_path.relative_to(path)}")
                 except OSError:
                     pass  # 目录非空或其他错误
+
+        if empty_dirs:
+            progress_mgr.set_progress(0, len(empty_dirs), "删空目录")
+            for idx, empty_dir in enumerate(empty_dirs, 1):
+                logger.info(f"删除空文件夹: {empty_dir}")
+                progress_mgr.set_progress(idx, len(empty_dirs), "删空目录")
 
     remove_empty_dirs(work_dir)
 
@@ -425,10 +482,13 @@ def main():
 
         logger.info("Git 操作完成")
 
-    logger.info("\n完成！")
-    logger.info("接下来可以:")
-    logger.info("1. 运行 repo/release/create_release_local.py 生成成品")
-    logger.info("2. 运行 repo/data/sync_cache.py 同步到远端")
+    # 关闭进度条
+    progress_mgr.close()
+
+    print("\n完成！")
+    print("接下来可以:")
+    print("1. 运行 repo/release/create_release_local.py 生成成品")
+    print("2. 运行 repo/data/sync_cache.py 同步到远端")
 
 
 if __name__ == "__main__":

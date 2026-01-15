@@ -8,7 +8,49 @@ import json
 import shutil
 from pathlib import Path
 import logging
+import sys
+import threading
+from io import StringIO
 
+# 尝试导入 tqdm
+try:
+    from tqdm import tqdm
+except ImportError:
+    print("错误: tqdm 库未安装，请运行 pip install tqdm", file=sys.stderr)
+    exit(1)
+
+
+class BottomProgressBar:
+    """底部固定进度条管理器（简化版，不清除进度条）"""
+    def __init__(self):
+        self.progress_bar = None
+        self.lock = threading.Lock()
+
+    def set_progress(self, current, total, desc=""):
+        """设置进度"""
+        with self.lock:
+            if self.progress_bar is None:
+                self.progress_bar = tqdm(total=total, desc=desc, unit="file",
+                                       bar_format='{desc} {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]',
+                                       file=sys.stdout)
+            else:
+                self.progress_bar.total = total
+                self.progress_bar.set_description(desc)
+                self.progress_bar.update(current - self.progress_bar.n)
+
+    def close(self):
+        """关闭进度条"""
+        with self.lock:
+            if self.progress_bar:
+                self.progress_bar.close()
+                self.progress_bar = None
+
+
+# 创建全局进度管理器
+progress_mgr = BottomProgressBar()
+
+
+# 配置日志（使用默认处理器，不自定义）
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -92,32 +134,47 @@ def cleanup_orphaned(cache_root, audio_oids, cover_oids, dry_run=True):
 
     # 执行删除
     deleted = 0
-    for path in orphaned_audio:
-        try:
-            path.unlink()
-            logger.info(f"删除音频: {path}")
-            deleted += 1
-        except Exception as e:
-            logger.error(f"删除失败 {path}: {e}")
+    total = len(orphaned_audio) + len(orphaned_covers)
 
-    for path in orphaned_covers:
-        try:
-            path.unlink()
-            logger.info(f"删除封面: {path}")
-            deleted += 1
-        except Exception as e:
-            logger.error(f"删除失败 {path}: {e}")
+    if total > 0:
+        progress_mgr.set_progress(0, total, "删除中")
+
+        for idx, path in enumerate(orphaned_audio, 1):
+            try:
+                path.unlink()
+                logger.info(f"删除音频: {path}")
+                deleted += 1
+            except Exception as e:
+                logger.error(f"删除失败 {path}: {e}")
+            progress_mgr.set_progress(idx, total, "删除中")
+
+        for idx, path in enumerate(orphaned_covers, 1):
+            try:
+                path.unlink()
+                logger.info(f"删除封面: {path}")
+                deleted += 1
+            except Exception as e:
+                logger.error(f"删除失败 {path}: {e}")
+            progress_mgr.set_progress(len(orphaned_audio) + idx, total, "删除中")
 
     # 清理空目录
+    logger.info("清理空目录...")
+    empty_dirs = []
+
     for subdir in (cache_root / 'objects' / 'sha256').iterdir():
         if subdir.is_dir() and not any(subdir.iterdir()):
-            subdir.rmdir()
-            logger.info(f"删除空目录: {subdir}")
+            empty_dirs.append(subdir)
 
     for subdir in (cache_root / 'covers' / 'sha256').iterdir():
         if subdir.is_dir() and not any(subdir.iterdir()):
+            empty_dirs.append(subdir)
+
+    if empty_dirs:
+        progress_mgr.set_progress(0, len(empty_dirs), "删空目录")
+        for idx, subdir in enumerate(empty_dirs, 1):
             subdir.rmdir()
             logger.info(f"删除空目录: {subdir}")
+            progress_mgr.set_progress(idx, len(empty_dirs), "删空目录")
 
     return deleted
 
@@ -161,6 +218,9 @@ def main():
         logger.info("=== 执行删除模式 ===")
 
     deleted = cleanup_orphaned(cache_root, audio_oids, cover_oids, dry_run)
+
+    # 关闭进度条
+    progress_mgr.close()
 
     if dry_run:
         logger.info("干运行完成，未删除任何文件")

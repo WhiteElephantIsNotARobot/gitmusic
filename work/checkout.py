@@ -2,6 +2,7 @@
 """
 检出脚本
 按 audio_oid 或标题从 cache 检出，嵌入标签和封面后保存到 work 目录
+支持批量检出和条件检出（如缺少封面、歌词等）
 """
 
 import os
@@ -11,8 +12,49 @@ import tempfile
 import shutil
 from pathlib import Path
 import logging
+import sys
+import threading
+from io import StringIO
 
-# 配置日志
+# 尝试导入 tqdm
+try:
+    from tqdm import tqdm
+except ImportError:
+    print("错误: tqdm 库未安装，请运行 pip install tqdm", file=sys.stderr)
+    exit(1)
+
+
+class BottomProgressBar:
+    """底部固定进度条管理器（简化版，不清除进度条）"""
+    def __init__(self):
+        self.progress_bar = None
+        self.lock = threading.Lock()
+
+    def set_progress(self, current, total, desc=""):
+        """设置进度"""
+        with self.lock:
+            if self.progress_bar is None:
+                self.progress_bar = tqdm(total=total, desc=desc, unit="file",
+                                       bar_format='{desc} {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]',
+                                       file=sys.stdout)
+            else:
+                self.progress_bar.total = total
+                self.progress_bar.set_description(desc)
+                self.progress_bar.update(current - self.progress_bar.n)
+
+    def close(self):
+        """关闭进度条"""
+        with self.lock:
+            if self.progress_bar:
+                self.progress_bar.close()
+                self.progress_bar = None
+
+
+# 创建全局进度管理器
+progress_mgr = BottomProgressBar()
+
+
+# 配置日志（使用默认处理器，不自定义）
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -167,7 +209,7 @@ def checkout_by_oid(oid, work_dir, cache_root):
 
 
 def checkout_by_title(title_pattern, work_dir, cache_root):
-    """按标题模式检出"""
+    """按标题模式检出（单个）"""
     metadata_file = Path(__file__).parent.parent / "metadata.jsonl"
     if not metadata_file.exists():
         logger.error("metadata.jsonl 不存在")
@@ -199,13 +241,162 @@ def checkout_by_title(title_pattern, work_dir, cache_root):
     return checkout_by_oid(matches[0]['audio_oid'], work_dir, cache_root)
 
 
+def find_missing_fields(metadata):
+    """检查条目缺少哪些字段"""
+    missing = []
+    if 'cover_oid' not in metadata:
+        missing.append('cover')
+    if 'uslt' not in metadata:
+        missing.append('uslt')
+    if 'album' not in metadata:
+        missing.append('album')
+    if 'date' not in metadata:
+        missing.append('date')
+    return missing
+
+
+def filter_metadata_by_missing(metadata_list, missing_fields):
+    """过滤出缺少指定字段的条目"""
+    field_map = {
+        'cover': 'cover_oid',
+        'uslt': 'uslt',
+        'album': 'album',
+        'date': 'date'
+    }
+
+    filtered = []
+    for item in metadata_list:
+        has_missing = False
+        for field in missing_fields:
+            if field in field_map:
+                if field_map[field] not in item:
+                    has_missing = True
+        if has_missing:
+            filtered.append(item)
+    return filtered
+
+
+def batch_checkout_by_missing(missing_fields, work_dir, cache_root, max_count=None):
+    """批量检出缺少指定字段的条目"""
+    metadata_file = Path(__file__).parent.parent / "metadata.jsonl"
+    if not metadata_file.exists():
+        logger.error("metadata.jsonl 不存在")
+        return 0
+
+    # 加载所有 metadata
+    metadata_list = []
+    with open(metadata_file, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                try:
+                    metadata_list.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+
+    # 过滤出缺少字段的条目
+    filtered = filter_metadata_by_missing(metadata_list, missing_fields)
+
+    if max_count:
+        filtered = filtered[:max_count]
+
+    if not filtered:
+        logger.info(f"没有发现缺少 {', '.join(missing_fields)} 的条目")
+        return 0
+
+    logger.info(f"找到 {len(filtered)} 个缺少 {', '.join(missing_fields)} 的条目")
+
+    # 批量检出
+    success_count = 0
+    progress_mgr.set_progress(0, len(filtered), "检出中")
+
+    for idx, item in enumerate(filtered, 1):
+        artists = item.get('artists', [])
+        title = item.get('title', '未知')
+        if isinstance(artists, list):
+            artist_str = ', '.join(artists)
+        else:
+            artist_str = str(artists)
+        filename = f"{artist_str} - {title}"
+        short_name = filename[:20] + "..." if len(filename) > 20 else filename
+        progress_mgr.set_progress(idx, len(filtered), f"检出: {short_name}")
+
+        if checkout_by_oid(item['audio_oid'], work_dir, cache_root):
+            success_count += 1
+
+    progress_mgr.close()
+    return success_count
+
+
+def batch_checkout_by_pattern(title_pattern, work_dir, cache_root, max_count=None):
+    """批量检出匹配标题模式的条目"""
+    metadata_file = Path(__file__).parent.parent / "metadata.jsonl"
+    if not metadata_file.exists():
+        logger.error("metadata.jsonl 不存在")
+        return 0
+
+    # 查找匹配条目
+    matches = []
+    with open(metadata_file, 'r', encoding='utf-8') as f:
+        for line in f:
+            try:
+                item = json.loads(line)
+                title = item.get('title', '').lower()
+                if title_pattern.lower() in title:
+                    matches.append(item)
+            except json.JSONDecodeError:
+                continue
+
+    if not matches:
+        logger.error(f"未找到匹配标题: {title_pattern}")
+        return 0
+
+    if max_count:
+        matches = matches[:max_count]
+
+    logger.info(f"找到 {len(matches)} 个匹配项")
+
+    # 批量检出
+    success_count = 0
+    progress_mgr.set_progress(0, len(matches), "检出中")
+
+    for idx, item in enumerate(matches, 1):
+        artists = item.get('artists', [])
+        title = item.get('title', '未知')
+        if isinstance(artists, list):
+            artist_str = ', '.join(artists)
+        else:
+            artist_str = str(artists)
+        filename = f"{artist_str} - {title}"
+        short_name = filename[:20] + "..." if len(filename) > 20 else filename
+        progress_mgr.set_progress(idx, len(matches), f"检出: {short_name}")
+
+        if checkout_by_oid(item['audio_oid'], work_dir, cache_root):
+            success_count += 1
+
+    progress_mgr.close()
+    return success_count
+
+
 def main():
     import argparse
 
-    parser = argparse.ArgumentParser(description='检出文件到 work 目录（嵌入标签和封面）')
-    parser.add_argument('identifier', help='audio_oid 或标题模式')
+    parser = argparse.ArgumentParser(description='检出文件到 work 目录（支持批量和条件检出）')
+
+    # 基本检出模式
+    parser.add_argument('identifier', nargs='?', help='audio_oid 或标题模式（可选）')
+
+    # 批量检出模式
+    parser.add_argument('--batch', action='store_true', help='批量检出模式')
+    parser.add_argument('--missing', nargs='+', choices=['cover', 'uslt', 'album', 'date'],
+                       help='检出缺少指定字段的条目（如 --missing cover uslt）')
+    parser.add_argument('--pattern', help='批量检出匹配标题模式的条目')
+    parser.add_argument('--max', type=int, help='最大检出数量限制')
+
+    # 其他选项
     parser.add_argument('--cache-root', default=str(Path(__file__).parent.parent.parent / 'cache'),
                        help='cache 根目录，默认 ../cache')
+
     args = parser.parse_args()
 
     # 确定目录
@@ -216,19 +407,48 @@ def main():
     if not work_dir.exists():
         work_dir.mkdir(parents=True, exist_ok=True)
 
-    # 判断是 OID 还是标题
-    identifier = args.identifier
-    if identifier.startswith('sha256:'):
-        success = checkout_by_oid(identifier, work_dir, cache_root)
-    else:
-        success = checkout_by_title(identifier, work_dir, cache_root)
+    # 检查参数组合
+    if not args.batch and not args.identifier:
+        logger.error("请指定检出方式：")
+        logger.error("  单个检出: python checkout.py <oid|标题>")
+        logger.error("  批量检出: python checkout.py --batch --missing cover uslt")
+        logger.error("  模式检出: python checkout.py --batch --pattern '关键词'")
+        return
 
-    if success:
-        logger.info("\n检出成功！")
+    # 执行检出
+    success_count = 0
+    total_count = 0
+
+    if args.batch:
+        # 批量模式
+        if args.missing:
+            # 按缺失字段检出
+            success_count = batch_checkout_by_missing(args.missing, work_dir, cache_root, args.max)
+            total_count = success_count
+        elif args.pattern:
+            # 按模式检出
+            success_count = batch_checkout_by_pattern(args.pattern, work_dir, cache_root, args.max)
+            total_count = success_count
+        else:
+            logger.error("批量模式需要指定 --missing 或 --pattern")
+            return
+    else:
+        # 单个检出
+        total_count = 1
+        identifier = args.identifier
+        if identifier.startswith('sha256:'):
+            success = checkout_by_oid(identifier, work_dir, cache_root)
+        else:
+            success = checkout_by_title(identifier, work_dir, cache_root)
+        success_count = 1 if success else 0
+
+    # 结果汇总
+    if success_count > 0:
+        logger.info(f"\n✓ 检出完成！成功: {success_count}/{total_count}")
         logger.info(f"文件位于: {work_dir}")
         logger.info("编辑后可运行: python repo/work/publish_meta.py")
     else:
-        logger.error("检出失败")
+        logger.error(f"\n✗ 检出失败或未找到匹配项")
 
 
 if __name__ == "__main__":

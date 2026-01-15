@@ -11,18 +11,51 @@ from pathlib import Path
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
-logging.basicConfig(level=logging.INFO, format='%(message)s')
-logger = logging.getLogger(__name__)
+import sys
+import threading
+from io import StringIO
 
 # 尝试导入 tqdm
 try:
     from tqdm import tqdm
-    HAS_TQDM = True
 except ImportError:
-    logger.warning("警告: tqdm 库未安装，将使用简单进度显示")
-    logger.info("安装命令: pip install tqdm")
-    HAS_TQDM = False
+    print("错误: tqdm 库未安装，请运行 pip install tqdm", file=sys.stderr)
+    exit(1)
+
+
+class BottomProgressBar:
+    """底部固定进度条管理器（简化版，不清除进度条）"""
+    def __init__(self):
+        self.progress_bar = None
+        self.lock = threading.Lock()
+
+    def set_progress(self, current, total, desc=""):
+        """设置进度"""
+        with self.lock:
+            if self.progress_bar is None:
+                self.progress_bar = tqdm(total=total, desc=desc, unit="file",
+                                       bar_format='{desc} {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]',
+                                       file=sys.stdout)
+            else:
+                self.progress_bar.total = total
+                self.progress_bar.set_description(desc)
+                self.progress_bar.update(current - self.progress_bar.n)
+
+    def close(self):
+        """关闭进度条"""
+        with self.lock:
+            if self.progress_bar:
+                self.progress_bar.close()
+                self.progress_bar = None
+
+
+# 创建全局进度管理器
+progress_mgr = BottomProgressBar()
+
+
+# 配置日志（使用默认处理器，不自定义）
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 
 def get_remote_file_list(remote_user, remote_host, remote_base):
@@ -50,20 +83,20 @@ def get_local_file_list(local_base):
     return local_files
 
 
-def sync_upload(remote_user, remote_host, local_path, remote_path, max_retries=3):
+def sync_upload(remote_user, remote_host, local_path, remote_path, max_retries=3, timeout=60):
     """上传单个文件（带重试机制）"""
     ssh_target = f"{remote_user}@{remote_host}"
 
     for attempt in range(max_retries):
         try:
-            # 创建远程目录
+            # 创建远程目录（5秒超时）
             remote_dir = '/'.join(remote_path.split('/')[:-1])
             mkdir_cmd = ['ssh', ssh_target, f'mkdir -p {remote_dir}']
-            subprocess.run(mkdir_cmd, capture_output=True, text=True, timeout=30, check=False)
+            subprocess.run(mkdir_cmd, capture_output=True, text=True, timeout=5, check=False)
 
-            # 上传文件
+            # 上传文件（可配置超时，默认60秒）
             scp_cmd = ['scp', str(local_path), f'{ssh_target}:{remote_path}']
-            result = subprocess.run(scp_cmd, capture_output=True, text=True, timeout=120)
+            result = subprocess.run(scp_cmd, capture_output=True, text=True, timeout=timeout)
 
             if result.returncode == 0:
                 logger.info(f"✓ 上传成功: {local_path.name}")
@@ -81,7 +114,7 @@ def sync_upload(remote_user, remote_host, local_path, remote_path, max_retries=3
                 logger.warning(f"上传超时（尝试 {attempt+1}/{max_retries}），重试中...")
                 time.sleep(2 ** attempt)
             else:
-                logger.error(f"上传超时（已重试 {max_retries} 次）: {local_path} -> {remote_path}")
+                logger.error(f"上传超时（已重试 {max_retries} 次，超时{timeout}s）: {local_path} -> {remote_path}")
                 return False
         except Exception as e:
             logger.error(f"上传异常: {local_path} -> {remote_path}: {e}")
@@ -90,18 +123,18 @@ def sync_upload(remote_user, remote_host, local_path, remote_path, max_retries=3
     return False
 
 
-def sync_download(remote_user, remote_host, remote_path, local_path, max_retries=3):
+def sync_download(remote_user, remote_host, remote_path, local_path, max_retries=3, timeout=60):
     """下载单个文件（带重试机制）"""
     ssh_target = f"{remote_user}@{remote_host}"
 
     for attempt in range(max_retries):
         try:
-            # 创建本地目录
+            # 创建本地目录（5秒超时）
             local_path.parent.mkdir(parents=True, exist_ok=True)
 
-            # 下载文件
+            # 下载文件（可配置超时，默认60秒）
             scp_cmd = ['scp', f'{ssh_target}:{remote_path}', str(local_path)]
-            result = subprocess.run(scp_cmd, capture_output=True, text=True, timeout=120)
+            result = subprocess.run(scp_cmd, capture_output=True, text=True, timeout=timeout)
 
             if result.returncode == 0:
                 logger.info(f"✓ 下载成功: {local_path.name}")
@@ -119,7 +152,7 @@ def sync_download(remote_user, remote_host, remote_path, local_path, max_retries
                 logger.warning(f"下载超时（尝试 {attempt+1}/{max_retries}），重试中...")
                 time.sleep(2 ** attempt)
             else:
-                logger.error(f"下载超时（已重试 {max_retries} 次）: {remote_path} -> {local_path}")
+                logger.error(f"下载超时（已重试 {max_retries} 次，超时{timeout}s）: {remote_path} -> {local_path}")
                 return False
         except Exception as e:
             logger.error(f"下载异常: {remote_path} -> {local_path}: {e}")
@@ -136,10 +169,11 @@ def main():
     parser.add_argument("-u", "--user", required=True, help="远程用户名")
     parser.add_argument("-H", "--host", required=True, help="远程主机")
     parser.add_argument("--local-root", default=str(Path(__file__).parent.parent.parent / "cache"), help="本地 cache 根目录")
-    parser.add_argument("--remote-root", default="/srv/music/data", help="远端 data 根目录（注意：远端是data，不是cache）")
-    parser.add_argument("--workers", type=int, default=4, help="并行工作进程数")
+    parser.add_argument("--remote-root", default="/srv/music/data", help="远端 data 根目录")
+    parser.add_argument("--workers", type=int, default=1, help="并行工作进程数")
     parser.add_argument("--direction", choices=['both', 'upload', 'download'], default='both', help="同步方向")
     parser.add_argument("--retries", type=int, default=3, help="每个文件的重试次数")
+    parser.add_argument("--timeout", type=int, default=60, help="文件传输超时时间（秒），默认60秒")
 
     args = parser.parse_args()
 
@@ -170,94 +204,77 @@ def main():
 
     # 上传（带进度条）
     if to_upload and args.direction in ['both', 'upload']:
+        logger.info("开始上传...")
+
         upload_tasks = []
         for rel_path in to_upload:
             local_path = local_root / rel_path
             remote_path = f"{args.remote_root}/{rel_path}"
             upload_tasks.append((local_path, remote_path))
 
+        success = 0
         total = len(upload_tasks)
-        logger.info(f"开始上传 {total} 个文件...")
 
-        if HAS_TQDM and total > 0:
-            # 使用tqdm进度条
-            with ThreadPoolExecutor(max_workers=args.workers) as executor:
-                # 提交所有任务
-                futures = []
-                for local, remote in upload_tasks:
-                    future = executor.submit(sync_upload, args.user, args.host, local, remote, args.retries)
-                    futures.append(future)
+        # 创建进度条
+        progress_mgr.set_progress(0, total, "上传中")
 
-                # 使用tqdm监控完成进度
-                success = 0
-                for future in tqdm(as_completed(futures), total=total, desc="上传中", unit="file", ncols=80):
-                    if future.result():
-                        success += 1
-                logger.info(f"上传完成: {success}/{total}")
-        else:
-            # 简单进度显示
-            success = 0
-            with ThreadPoolExecutor(max_workers=args.workers) as executor:
-                futures = []
-                for local, remote in upload_tasks:
-                    idx = len(futures) + 1
-                    logger.info(f"[{idx}/{total}] 队列: {local.name}")
-                    future = executor.submit(sync_upload, args.user, args.host, local, remote, args.retries)
-                    futures.append(future)
+        with ThreadPoolExecutor(max_workers=args.workers) as executor:
+            futures = []
+            for local, remote in upload_tasks:
+                # 提交任务，不显示队列日志
+                future = executor.submit(sync_upload, args.user, args.host, local, remote, args.retries, args.timeout)
+                futures.append(future)
 
-                for idx, future in enumerate(as_completed(futures), 1):
-                    if future.result():
-                        success += 1
-                    else:
-                        logger.error(f"[{idx}/{total}] 失败")
-            logger.info(f"上传完成: {success}/{total}")
+            completed = 0
+            for future in as_completed(futures):
+                completed += 1
+                if future.result():
+                    success += 1
+                else:
+                    logger.error(f"✗ 上传失败")
+                progress_mgr.set_progress(completed, total, "上传中")
+
+        logger.info(f"上传完成: {success}/{total}")
 
     # 下载（带进度条）
     if to_download and args.direction in ['both', 'download']:
+        logger.info("开始下载...")
+
         download_tasks = []
         for rel_path in to_download:
             remote_path = f"{args.remote_root}/{rel_path}"
             local_path = local_root / rel_path
             download_tasks.append((remote_path, local_path))
 
+        success = 0
         total = len(download_tasks)
-        logger.info(f"开始下载 {total} 个文件...")
 
-        if HAS_TQDM and total > 0:
-            # 使用tqdm进度条
-            with ThreadPoolExecutor(max_workers=args.workers) as executor:
-                # 提交所有任务
-                futures = []
-                for remote, local in download_tasks:
-                    future = executor.submit(sync_download, args.user, args.host, remote, local, args.retries)
-                    futures.append(future)
+        # 创建进度条
+        progress_mgr.set_progress(0, total, "下载中")
 
-                # 使用tqdm监控完成进度
-                success = 0
-                for future in tqdm(as_completed(futures), total=total, desc="下载中", unit="file", ncols=80):
-                    if future.result():
-                        success += 1
-                logger.info(f"下载完成: {success}/{total}")
-        else:
-            # 简单进度显示
-            success = 0
-            with ThreadPoolExecutor(max_workers=args.workers) as executor:
-                futures = []
-                for remote, local in download_tasks:
-                    idx = len(futures) + 1
-                    logger.info(f"[{idx}/{total}] 队列: {local.name}")
-                    future = executor.submit(sync_download, args.user, args.host, remote, local, args.retries)
-                    futures.append(future)
+        with ThreadPoolExecutor(max_workers=args.workers) as executor:
+            futures = []
+            for remote, local in download_tasks:
+                # 提交任务，不显示队列日志
+                future = executor.submit(sync_download, args.user, args.host, remote, local, args.retries, args.timeout)
+                futures.append(future)
 
-                for idx, future in enumerate(as_completed(futures), 1):
-                    if future.result():
-                        success += 1
-                    else:
-                        logger.error(f"[{idx}/{total}] 失败")
-            logger.info(f"下载完成: {success}/{total}")
+            completed = 0
+            for future in as_completed(futures):
+                completed += 1
+                if future.result():
+                    success += 1
+                else:
+                    logger.error(f"✗ 下载失败")
+                progress_mgr.set_progress(completed, total, "下载中")
+
+        logger.info(f"下载完成: {success}/{total}")
 
     if not to_upload and not to_download:
         logger.info("无需同步，数据已一致")
+
+    # 关闭进度条
+    progress_mgr.close()
 
 
 if __name__ == "__main__":
