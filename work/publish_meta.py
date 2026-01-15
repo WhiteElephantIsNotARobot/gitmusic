@@ -293,10 +293,10 @@ def main():
     if args.files:
         audio_files = [Path(f) for f in args.files if Path(f).exists()]
     else:
-        # 扫描 work 目录
+        # 扫描 work 目录（包括子文件夹）
         audio_files = []
         for ext in ['*.mp3', '*.flac', '*.m4a', '*.wav', '*.ogg']:
-            audio_files.extend(work_dir.glob(ext))
+            audio_files.extend(work_dir.rglob(ext))
 
     if not audio_files:
         logger.error("未找到音频文件")
