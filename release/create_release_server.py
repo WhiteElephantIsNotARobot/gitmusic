@@ -29,64 +29,57 @@ except ImportError:
 
 def embed_metadata(audio_path, metadata, cover_path=None):
     """嵌入元数据到音频文件"""
-    tmp_path = None
     try:
         # 创建临时文件
-        fd, path_str = tempfile.mkstemp(suffix='.mp3')
-        os.close(fd)
-        tmp_path = Path(path_str)
+        with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as tmp:
+            tmp_path = Path(tmp.name)
 
         # 复制音频到临时文件
         shutil.copy2(audio_path, tmp_path)
 
         # 使用 mutagen 嵌入 metadata
-        # 显式使用 ID3 对象处理，避免 MP3 包装器可能的问题
-        from mutagen.id3 import ID3, TPE1, TIT2, TALB, TDRC, USLT, APIC
-        
-        # 确保文件存在且可写
-        path_str = str(tmp_path.absolute())
-        
-        try:
-            tags = ID3(path_str)
-        except Exception:
-            # 如果没有标签，创建一个新的
-            tags = ID3()
+        audio = MP3(tmp_path)
 
-        # 清除现有标签
-        tags.delete(path_str)
+        # 确保有 ID3 标签
+        if audio.tags is None:
+            audio.add_tags()
+
+        # 清除现有 ID3 标签
+        audio.delete()
 
         # 添加新的标签
         # 艺术家
         artists = metadata.get('artists', [])
         if artists:
-            clean_artists = [str(a).replace('\0', '') for a in (artists if isinstance(artists, list) else [artists])]
-            tags.add(TPE1(encoding=3, text=clean_artists))
+            audio.tags.add(TPE1(encoding=3, text=artists if isinstance(artists, list) else [artists]))
 
         # 标题
-        title = str(metadata.get('title', '未知')).replace('\0', '')
+        title = metadata.get('title')
         if title:
-            tags.add(TIT2(encoding=3, text=title))
+            audio.tags.add(TIT2(encoding=3, text=title))
 
-        # 专辑
-        album = str(metadata.get('album', '')).replace('\0', '') or title
+        # 专辑（如果没有，使用标题填充）
+        album = metadata.get('album')
+        if not album:
+            album = title
         if album:
-            tags.add(TALB(encoding=3, text=album))
+            audio.tags.add(TALB(encoding=3, text=album))
 
         # 日期
-        date = str(metadata.get('date', '')).replace('\0', '')
+        date = metadata.get('date')
         if date:
-            tags.add(TDRC(encoding=3, text=date))
+            audio.tags.add(TDRC(encoding=3, text=date))
 
         # 歌词
-        uslt = str(metadata.get('uslt', '')).replace('\0', '')
+        uslt = metadata.get('uslt')
         if uslt:
-            tags.add(USLT(encoding=3, lang='eng', desc='', text=uslt))
+            audio.tags.add(USLT(encoding=3, lang='eng', desc='', text=uslt))
 
         # 封面
         if cover_path and cover_path.exists():
             with open(cover_path, 'rb') as f:
                 cover_data = f.read()
-            tags.add(APIC(
+            audio.tags.add(APIC(
                 encoding=3,
                 mime='image/jpeg',
                 type=3,  # Cover (front)
@@ -95,20 +88,19 @@ def embed_metadata(audio_path, metadata, cover_path=None):
             ))
 
         # 保存
-        tags.save(path_str)
+        audio.save()
 
         # 读取结果数据
         with open(tmp_path, 'rb') as f:
             data = f.read()
 
-        if tmp_path.exists():
-            os.unlink(tmp_path)
+        os.unlink(tmp_path)
         return data
 
     except Exception as e:
-        if tmp_path and tmp_path.exists():
-            os.unlink(tmp_path)
         logger.error(f"嵌入元数据失败: {e}")
+        if 'tmp_path' in locals() and tmp_path.exists():
+            os.unlink(tmp_path)
         raise
 
 
@@ -126,7 +118,6 @@ def get_work_filename(metadata):
 
 def sanitize_filename(filename):
     """清理文件名中的非法字符"""
-    # 替换 Windows/Linux 非法字符
     for char in ['<', '>', ':', '"', '/', '\\', '|', '?', '*']:
         filename = filename.replace(char, '_')
     return filename
@@ -188,18 +179,17 @@ def process_single_item(item, data_root, releases_root):
         # 原子替换
         shutil.move(str(temp_path), str(dest_path))
 
-        # 设置文件时间为元数据中的更新/创建时间
+        # 设置文件时间
         try:
             dt_str = item.get('updated_at') or item.get('created_at')
             if dt_str:
                 dt = datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
                 ts = dt.timestamp()
                 os.utime(dest_path, (ts, ts))
-        except Exception as e:
-            logger.warning(f"设置文件时间失败 {filename}: {e}")
+        except Exception:
+            pass
 
         logger.info(f"✓ 生成: {filename}")
-
         return True
 
     except Exception as e:
@@ -231,7 +221,7 @@ def main():
     parser.add_argument('--data-root', default='/srv/music/data', help='数据根目录')
     parser.add_argument('--releases-root', default='/srv/music/data/releases', help='成品目录')
     parser.add_argument('--metadata', help='指定 metadata.jsonl 路径（可选）')
-    parser.add_argument('--workers', type=int, default=4, help='并行工作进程数')
+    parser.add_argument('--workers', type=int, default=4, help='并行工作线程数')
     args = parser.parse_args()
 
     data_root = Path(args.data_root)
@@ -240,10 +230,7 @@ def main():
     if args.metadata:
         metadata_file = Path(args.metadata)
     else:
-        # 尝试从当前目录或上级目录查找
-        metadata_file = Path('metadata.jsonl')
-        if not metadata_file.exists():
-            metadata_file = Path(__file__).parent.parent / 'metadata.jsonl'
+        metadata_file = Path(__file__).parent.parent / 'metadata.jsonl'
 
     if not metadata_file.exists():
         logger.error(f"metadata.jsonl 不存在: {metadata_file}")
@@ -263,13 +250,11 @@ def main():
     success_count = 0
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
         futures = [executor.submit(process_single_item, item, data_root, releases_root) for item in metadata_list]
-
         for future in as_completed(futures):
             if future.result():
                 success_count += 1
 
     logger.info(f"完成！成功: {success_count}/{len(metadata_list)}")
-    logger.info(f"成品目录: {releases_root}")
 
 
 if __name__ == "__main__":
