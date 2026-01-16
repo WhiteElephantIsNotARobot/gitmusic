@@ -48,42 +48,37 @@ def embed_metadata(audio_path, metadata, cover_path=None):
         ]
         subprocess.run(cmd, capture_output=True, check=True)
 
-        # 2. 使用 mutagen 在干净的文件上构建新标签
-        audio = MP3(str(tmp_clean))
-        try:
-            audio.add_tags()
-        except Exception:
-            # 标签已存在，忽略错误
-            pass
+        # 2. 使用 ID3 直接在干净的文件上构建新标签
+        from mutagen.id3 import ID3, TPE1, TIT2, TALB, TDRC, USLT, APIC
         
-        # 清除现有标签并重新构建
-        audio.delete()
-        audio.add_tags()
+        # 创建一个空的 ID3 标签对象
+        tags = ID3()
         
         artists = metadata.get('artists', [])
         if artists:
-            audio.tags.add(TPE1(encoding=3, text=artists if isinstance(artists, list) else [artists]))
+            tags.add(TPE1(encoding=3, text=artists if isinstance(artists, list) else [artists]))
         
         title = metadata.get('title', '未知')
-        audio.tags.add(TIT2(encoding=3, text=title))
+        tags.add(TIT2(encoding=3, text=title))
         
         album = metadata.get('album') or title
-        audio.tags.add(TALB(encoding=3, text=album))
+        tags.add(TALB(encoding=3, text=album))
         
         date = metadata.get('date')
         if date:
-            audio.tags.add(TDRC(encoding=3, text=date))
+            tags.add(TDRC(encoding=3, text=date))
             
         uslt = metadata.get('uslt')
         if uslt:
-            audio.tags.add(USLT(encoding=3, lang='eng', desc='', text=uslt))
+            tags.add(USLT(encoding=3, lang='eng', desc='', text=uslt))
             
         if cover_path and cover_path.exists():
             with open(cover_path, 'rb') as f:
                 cover_data = f.read()
-            audio.tags.add(APIC(encoding=3, mime='image/jpeg', type=3, desc='Cover', data=cover_data))
+            tags.add(APIC(encoding=3, mime='image/jpeg', type=3, desc='Cover', data=cover_data))
         
-        audio.save()
+        # 直接保存标签到干净的文件
+        tags.save(str(tmp_clean))
 
         # 3. 读取处理后的数据
         with open(tmp_clean, 'rb') as f:
