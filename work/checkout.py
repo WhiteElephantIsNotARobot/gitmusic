@@ -127,8 +127,6 @@ def embed_tags(audio_path, cover_path, metadata, output_path):
             audio.tags.add(TIT2(encoding=3, text=title))
         if artists:
             audio.tags.add(TPE1(encoding=3, text=artists))
-        if not album:
-            album = title  # 没有专辑时使用标题
         if album:
             audio.tags.add(TALB(encoding=3, text=album))
         if date:
