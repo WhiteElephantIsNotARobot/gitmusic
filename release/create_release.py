@@ -115,6 +115,7 @@ def process_single_item(item, data_root, releases_root):
         audio_oid = item.get('audio_oid')
         if not audio_oid: return False
 
+        title = item.get('title', '未知')
         filename = sanitize_filename(get_work_filename(item))
         dest_path = releases_root / filename
 
@@ -122,6 +123,7 @@ def process_single_item(item, data_root, releases_root):
         hash_hex = audio_oid[7:]
         audio_path = data_root / 'objects' / 'sha256' / hash_hex[:2] / f"{hash_hex}.mp3"
         if not audio_path.exists():
+            logger.error(f"跳过生成 (音频缺失): {title} [{audio_oid[:16]}]")
             return False
 
         # 查找封面
@@ -130,6 +132,9 @@ def process_single_item(item, data_root, releases_root):
         if cover_oid:
             c_hash = cover_oid[7:]
             cover_path = data_root / 'covers' / 'sha256' / c_hash[:2] / f"{c_hash}.jpg"
+            if not cover_path.exists():
+                logger.error(f"跳过生成 (封面缺失): {title} [{cover_oid[:16]}]")
+                return False
 
         data = embed_metadata(audio_path, item, cover_path)
 
