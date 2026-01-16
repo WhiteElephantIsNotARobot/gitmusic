@@ -31,19 +31,20 @@ except ImportError:
 
 
 def embed_metadata(audio_path, metadata, cover_path=None):
-    """嵌入元数据到音频文件（内存模式）"""
+    """嵌入元数据到音频文件（稳健模式）"""
+    tmp_file = None
     try:
-        # 1. 读取原始音频数据
-        with open(audio_path, 'rb') as f:
-            audio_data = f.read()
+        # 1. 创建临时文件并复制原始音频
+        fd, tmp_path = tempfile.mkstemp(suffix='.mp3')
+        os.close(fd)
+        tmp_file = Path(tmp_path)
+        shutil.copy2(audio_path, tmp_file)
 
-        # 2. 使用 BytesIO 在内存中处理 ID3 标签
-        import io
+        # 2. 使用 mutagen 处理标签
         from mutagen.mp3 import MP3
         from mutagen.id3 import ID3, TPE1, TIT2, TALB, TDRC, USLT, APIC
 
-        audio_stream = io.BytesIO(audio_data)
-        audio = MP3(audio_stream)
+        audio = MP3(tmp_file)
 
         # 确保有 ID3 标签并清除旧标签
         if audio.tags is None:
@@ -74,13 +75,21 @@ def embed_metadata(audio_path, metadata, cover_path=None):
                 cover_data = f.read()
             audio.tags.add(APIC(encoding=3, mime='image/jpeg', type=3, desc='Cover', data=cover_data))
 
-        # 保存到内存流
-        audio.save(audio_stream)
-        return audio_stream.getvalue()
+        # 保存标签
+        audio.save()
+
+        # 3. 读取处理后的数据
+        with open(tmp_file, 'rb') as f:
+            data = f.read()
+
+        return data
 
     except Exception as e:
         logger.error(f"嵌入元数据失败: {e}")
         raise
+    finally:
+        if tmp_file and tmp_file.exists():
+            tmp_file.unlink()
 
 
 def get_work_filename(metadata):
