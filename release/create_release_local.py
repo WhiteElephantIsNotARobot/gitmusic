@@ -138,7 +138,8 @@ def create_release_item(metadata_item, output_dir):
         artist_str = str(artists)
 
     filename = f"{artist_str} - {title}.mp3"
-    # 移除文件名中的非法字符
+    # 移除文件名中的非法字符及空字符
+    filename = filename.replace('\x00', '')
     for char in ['<', '>', ':', '"', '/', '\\', '|', '?', '*']:
         filename = filename.replace(char, '_')
 

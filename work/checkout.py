@@ -117,11 +117,11 @@ def embed_tags(audio_path, cover_path, metadata, output_path):
         audio.delete()
 
         # 添加标签
-        title = metadata.get('title', '')
-        artists = metadata.get('artists', [])
-        album = metadata.get('album', '')
-        date = metadata.get('date', '')
-        uslt = metadata.get('uslt', '')
+        title = metadata.get('title', '').replace('\x00', '').strip()
+        artists = [str(a).replace('\x00', '').strip() for a in metadata.get('artists', []) if a]
+        album = metadata.get('album', '').replace('\x00', '').strip()
+        date = str(metadata.get('date', '')).replace('\x00', '').strip()
+        uslt = metadata.get('uslt', '').replace('\x00', '').strip()
 
         if title:
             audio.tags.add(TIT2(encoding=3, text=title))

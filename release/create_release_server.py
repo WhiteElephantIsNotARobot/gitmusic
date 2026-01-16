@@ -31,67 +31,56 @@ except ImportError:
 
 
 def embed_metadata(audio_path, metadata, cover_path=None):
-    """嵌入元数据到音频文件（强制重构模式）"""
-    tmp_clean = None
+    """嵌入元数据到音频文件（内存模式）"""
     try:
-        # 1. 使用 ffmpeg 剥离所有原始标签，生成一个绝对干净的流
-        # 这能彻底解决 mutagen 遇到的 embedded null byte 问题
-        fd, tmp_clean_path = tempfile.mkstemp(suffix='.clean.mp3')
-        os.close(fd)
-        tmp_clean = Path(tmp_clean_path)
+        # 1. 读取原始音频数据
+        with open(audio_path, 'rb') as f:
+            audio_data = f.read()
 
-        cmd = [
-            'ffmpeg', '-y', '-i', str(audio_path),
-            '-map', '0:a', '-c', 'copy',
-            '-map_metadata', '-1',
-            str(tmp_clean)
-        ]
-        subprocess.run(cmd, capture_output=True, check=True)
-
-        # 2. 使用 ID3 直接在干净的文件上构建新标签
+        # 2. 使用 BytesIO 在内存中处理 ID3 标签
+        import io
+        from mutagen.mp3 import MP3
         from mutagen.id3 import ID3, TPE1, TIT2, TALB, TDRC, USLT, APIC
-        
-        # 创建一个空的 ID3 标签对象
-        tags = ID3()
-        
+
+        audio_stream = io.BytesIO(audio_data)
+        audio = MP3(audio_stream)
+
+        # 确保有 ID3 标签并清除旧标签
+        if audio.tags is None:
+            audio.add_tags()
+        audio.delete()
+
+        # 添加新标签
         artists = metadata.get('artists', [])
         if artists:
-            tags.add(TPE1(encoding=3, text=artists if isinstance(artists, list) else [artists]))
-        
+            audio.tags.add(TPE1(encoding=3, text=artists if isinstance(artists, list) else [artists]))
+
         title = metadata.get('title', '未知')
-        tags.add(TIT2(encoding=3, text=title))
-        
+        audio.tags.add(TIT2(encoding=3, text=title))
+
         album = metadata.get('album') or title
-        tags.add(TALB(encoding=3, text=album))
-        
+        audio.tags.add(TALB(encoding=3, text=album))
+
         date = metadata.get('date')
         if date:
-            tags.add(TDRC(encoding=3, text=date))
-            
+            audio.tags.add(TDRC(encoding=3, text=date))
+
         uslt = metadata.get('uslt')
         if uslt:
-            tags.add(USLT(encoding=3, lang='eng', desc='', text=uslt))
-            
+            audio.tags.add(USLT(encoding=3, lang='eng', desc='', text=uslt))
+
         if cover_path and cover_path.exists():
             with open(cover_path, 'rb') as f:
                 cover_data = f.read()
-            tags.add(APIC(encoding=3, mime='image/jpeg', type=3, desc='Cover', data=cover_data))
-        
-        # 直接保存标签到干净的文件
-        tags.save(str(tmp_clean))
+            audio.tags.add(APIC(encoding=3, mime='image/jpeg', type=3, desc='Cover', data=cover_data))
 
-        # 3. 读取处理后的数据
-        with open(tmp_clean, 'rb') as f:
-            data = f.read()
-
-        return data
+        # 保存到内存流
+        audio.save(audio_stream)
+        return audio_stream.getvalue()
 
     except Exception as e:
         logger.error(f"嵌入元数据失败: {e}")
         raise
-    finally:
-        if tmp_clean and tmp_clean.exists():
-            tmp_clean.unlink()
 
 
 def get_work_filename(metadata):
@@ -103,10 +92,13 @@ def get_work_filename(metadata):
 
 
 def sanitize_filename(filename):
-    """清理文件名中的非法字符"""
+    """清理文件名中的非法字符及空字符"""
+    # 彻底移除空字符，这是导致 "embedded null character in dst" 的元凶
+    filename = filename.replace('\x00', '')
+    # 清理 Windows/Linux 下的非法路径字符
     for char in ['<', '>', ':', '"', '/', '\\', '|', '?', '*']:
         filename = filename.replace(char, '_')
-    return filename
+    return filename.strip()
 
 
 def find_object(oid, data_root):
@@ -171,7 +163,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--data-root', default='/srv/music/data')
     parser.add_argument('--releases-root', default='/srv/music/data/releases')
-    parser.add_argument('--workers', type=int, default=2)
+    parser.add_argument('--workers', type=int, default=1)
     args = parser.parse_args()
 
     data_root = Path(args.data_root)

@@ -127,14 +127,17 @@ def extract_cover(audio_path):
 
 
 def split_artists(artists_str):
-    """拆分艺术家字符串"""
+    """拆分艺术家字符串，处理多种分隔符包括空字符"""
     if not artists_str:
         return []
-    # 先按 ' & ' 拆分，再按 ', ' 拆分
+    # 彻底移除空字符，并统一替换为逗号以便后续拆分
+    artists_str = artists_str.replace('\x00', ', ')
+    # 处理常见的 ' & ' 分隔符
     parts = artists_str.split(' & ')
     artist_list = []
     for part in parts:
-        artist_list.extend([p.strip() for p in part.split(', ') if p.strip()])
+        # 按逗号拆分并清理每个元素
+        artist_list.extend([p.strip() for p in part.split(',') if p.strip()])
     return artist_list
 
 
@@ -148,23 +151,24 @@ def parse_metadata(audio_path):
             # 艺术家
             if 'TPE1' in audio.tags:
                 artists = audio.tags['TPE1']
-                if isinstance(artists, list):
-                    artist_list = []
+                artist_list = []
+                if isinstance(artists, (list, tuple)):
                     for a in artists:
                         artist_list.extend(split_artists(str(a)))
-                    metadata["artists"] = artist_list
                 else:
-                    metadata["artists"] = split_artists(str(artists))
+                    artist_list = split_artists(str(artists))
+                # 再次确保每个字符串都是干净的
+                metadata["artists"] = [a.replace('\x00', '').strip() for a in artist_list if a.strip()]
 
             # 标题
             if 'TIT2' in audio.tags:
-                title = audio.tags['TIT2']
-                metadata["title"] = str(title[0]) if isinstance(title, list) else str(title)
+                title = str(audio.tags['TIT2'][0]) if isinstance(audio.tags['TIT2'], (list, tuple)) else str(audio.tags['TIT2'])
+                metadata["title"] = title.replace('\x00', '').strip()
 
             # 专辑
             if 'TALB' in audio.tags:
-                album = audio.tags['TALB']
-                metadata["album"] = str(album[0]) if isinstance(album, list) else str(album)
+                album = str(audio.tags['TALB'][0]) if isinstance(audio.tags['TALB'], (list, tuple)) else str(audio.tags['TALB'])
+                metadata["album"] = album.replace('\x00', '').strip()
 
             # 日期
             if 'TDRC' in audio.tags:
