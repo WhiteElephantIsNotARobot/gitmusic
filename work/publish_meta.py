@@ -261,16 +261,20 @@ def process_file(audio_file, rel_path, metadata_index, metadata_list, cache_root
             # 检查是否有实际变更
             has_changes = False
 
-            # 检查封面是否有变化
-            if new_cover_oid != existing.get('cover_oid'):
+            # 检查封面是否有变化 (只有当提取到新封面且与旧的不同时才更新)
+            if new_cover_oid and new_cover_oid != existing.get('cover_oid'):
                 has_changes = True
 
             # 检查其他字段是否有变化
             if not has_changes:
                 for field in ['title', 'artists', 'album', 'date', 'uslt']:
-                    if metadata.get(field) != existing.get(field):
-                        has_changes = True
-                        break
+                    new_val = metadata.get(field)
+                    old_val = existing.get(field)
+                    if new_val != old_val:
+                        # 只有当新值存在且不同，或者旧值存在但新值变为空时才算变化
+                        if new_val or old_val:
+                            has_changes = True
+                            break
 
             if not has_changes:
                 result['action'] = 'no_change'
@@ -279,9 +283,8 @@ def process_file(audio_file, rel_path, metadata_index, metadata_list, cache_root
             # 执行更新
             result['action'] = 'updated'
             existing['audio_oid'] = audio_oid
-            existing['created_at'] = existing.get('created_at', now)
-
-            # 更新所有可能变化的字段，空值则删除字段
+            
+            # 更新字段
             for field in ['title', 'artists', 'album', 'date', 'uslt']:
                 value = metadata.get(field)
                 if value:
@@ -289,21 +292,17 @@ def process_file(audio_file, rel_path, metadata_index, metadata_list, cache_root
                 elif field in existing:
                     del existing[field]
 
-            # 确保 title 和 artists 不为空
-            if 'title' not in existing or not existing['title']:
-                existing['title'] = metadata.get('title', '未知')
-            if 'artists' not in existing or not existing['artists']:
-                existing['artists'] = metadata.get('artists', [])
+            # 确保关键字段不丢失
+            if not existing.get('title'): existing['title'] = '未知'
+            if not existing.get('artists'): existing['artists'] = []
 
             existing['updated_at'] = now
 
-            # 处理封面
+            # 处理封面：只有提取到新封面才更新，没提取到则保留原样
             if new_cover_oid:
                 existing['cover_oid'] = new_cover_oid
                 if cover_data:
                     save_to_cache(cover_data, new_cover_oid, cache_root, 'covers')
-            elif 'cover_oid' in existing:
-                del existing['cover_oid']
         else:
             # 新增条目
             result['action'] = 'added'
@@ -459,48 +458,25 @@ def main():
     logger.info(f"Metadata 已保存到: {metadata_file}")
 
     # 统计结果
-    added_list = [r for r in processed_results if r['action'] == 'added']
-    updated_list = [r for r in processed_results if r['action'] == 'updated']
-    added_count = len(added_list)
-    updated_count = len(updated_list)
+    added_count = len([r for r in processed_results if r['action'] == 'added'])
+    updated_count = len([r for r in processed_results if r['action'] == 'updated'])
 
     logger.info(f"处理成功: {len(processed_results)}/{len(audio_files)} 个文件")
     logger.info(f"  新增: {added_count} 个")
     logger.info(f"  更新: {updated_count} 个")
 
-    # 智能列表输出：输出数量较少的那个列表
-    if added_count > 0 and updated_count > 0:
-        if added_count <= updated_count:
-            logger.info("\n【新增条目列表】(较少)")
-            for r in added_list:
-                artists = ', '.join(r['artists'])
-                logger.info(f"  • {artists} - {r['title']}")
-        else:
-            logger.info("\n【更新条目列表】(较少)")
-            for r in updated_list:
-                artists = ', '.join(r['artists'])
-                logger.info(f"  • {artists} - {r['title']}")
-    elif added_count > 0:
-        logger.info("\n【新增条目列表】")
-        for r in added_list:
-            artists = ', '.join(r['artists'])
-            logger.info(f"  • {artists} - {r['title']}")
-    elif updated_count > 0:
-        logger.info("\n【更新条目列表】")
-        for r in updated_list:
-            artists = ', '.join(r['artists'])
-            logger.info(f"  • {artists} - {r['title']}")
-
     # 删除 work 中的文件
     logger.info("删除已处理的work文件...")
-    total_del = len(processed_results)
-    progress_mgr.set_progress(0, total_del, "清理中")
-
-    for idx, result in enumerate(processed_results, 1):
-        work_file = work_dir / result['rel_path']
-        if work_file.exists():
-            work_file.unlink()
-            logger.info(f"已删除: {result['rel_path']}")
+    to_delete = [r for r in processed_results if r['action'] != 'no_change']
+    total_del = len(to_delete)
+    if total_del > 0:
+        progress_mgr.set_progress(0, total_del, "清理中")
+        for idx, result in enumerate(to_delete, 1):
+            work_file = work_dir / result['rel_path']
+            if work_file.exists():
+                work_file.unlink()
+            progress_mgr.set_progress(idx, total_del, "清理中")
+    
     logger.info("清理空文件夹...")
 
     def remove_empty_dirs(path):
