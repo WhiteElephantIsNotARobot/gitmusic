@@ -79,17 +79,16 @@ logger = logging.getLogger(__name__)
 
 
 def compress_to_jpg(input_path, output_path):
-    """使用 ffmpeg 将图片压缩为 JPG（确保文件变小）"""
+    """使用 ffmpeg 将图片压缩为 JPG（平衡画质与体积）"""
     try:
-        # 使用更激进的压缩参数
-        # -q:v 5-8: 质量值越大，文件越小（2-31，推荐5-8）
-        # -scale 600x600: 缩小尺寸
+        # -q:v 2-3: 高质量 (1-31, 1最高)
+        # scale: 限制最大尺寸为 800，但不强制拉伸小图
         cmd = [
             'ffmpeg', '-i', str(input_path),
-            '-vf', 'scale=600:600:force_original_aspect_ratio=decrease',
-            '-q:v', '6',  # 更高的质量值 = 更小的文件
+            '-vf', "scale='min(800,iw)':'min(800,ih)':force_original_aspect_ratio=decrease",
+            '-q:v', '2',
             '-f', 'image2',
-            str(output_path)
+            '-y', str(output_path)
         ]
         subprocess.run(cmd, capture_output=True, check=True)
         return True
@@ -133,28 +132,25 @@ def main():
 
     # 处理每个封面
     updated_count = 0
-    total_to_process = len([m for m in metadata_list if 'cover_oid' in m])
+    # 只统计真正需要检查的文件
+    items_with_cover = [m for m in metadata_list if 'cover_oid' in m]
+    total_to_process = len(items_with_cover)
 
     if total_to_process > 0:
-        progress_mgr.set_progress(0, total_to_process, "压缩中")
+        progress_mgr.set_progress(0, total_to_process, "检查封面")
 
-        processed = 0
-        for metadata in metadata_list:
-            if 'cover_oid' not in metadata:
-                continue
-
-            processed += 1
+        for idx, metadata in enumerate(items_with_cover, 1):
             old_oid = metadata['cover_oid'].replace('sha256:', '')
             old_path = covers_root / old_oid[:2] / f"{old_oid}.jpg"
 
             if not old_path.exists():
-                logger.warning(f"封面文件不存在: {old_path}")
-                progress_mgr.set_progress(processed, total_to_process, "压缩中")
+                progress_mgr.set_progress(idx, total_to_process, "检查封面")
                 continue
 
-            # 检查是否已经是 JPG 且大小合适
-            if old_path.stat().st_size < 200 * 1024:  # 小于 200KB 跳过
-                progress_mgr.set_progress(processed, total_to_process, "压缩中")
+            # 检查是否已经是高质量且大小合适
+            # 只有大于 500KB 的才尝试压缩
+            if old_path.stat().st_size < 500 * 1024:
+                progress_mgr.set_progress(idx, total_to_process, "检查封面")
                 continue
 
             # 压缩为 JPG
@@ -197,7 +193,7 @@ def main():
                 logger.info(f"压缩并更新封面: {old_oid[:8]}... -> {new_hash[:8]}... ({old_size/1024:.1f}KB → {new_size/1024:.1f}KB)")
                 updated_count += 1
 
-            progress_mgr.set_progress(processed, total_to_process, "压缩中")
+            progress_mgr.set_progress(idx, total_to_process, "检查封面")
 
     if updated_count > 0:
         # 写回 metadata.jsonl（临时文件 + 原子替换）
