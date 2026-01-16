@@ -48,33 +48,41 @@ def embed_metadata(audio_path, metadata, cover_path=None):
         ]
         subprocess.run(cmd, capture_output=True, check=True)
 
-        # 2. 使用 mutagen 在干净的文件上构建新标签
+        # 使用 mutagen 嵌入 metadata
         audio = MP3(str(tmp_clean))
-        audio.add_tags()
+        try:
+            audio.add_tags()
+        except Exception:
+            # 标签已存在，忽略错误
+            pass
         
+        # 清除现有标签并重新构建
+        audio.delete()
+        audio.add_tags()
+
         artists = metadata.get('artists', [])
         if artists:
             audio.tags.add(TPE1(encoding=3, text=artists if isinstance(artists, list) else [artists]))
-        
+
         title = metadata.get('title', '未知')
         audio.tags.add(TIT2(encoding=3, text=title))
-        
+
         album = metadata.get('album') or title
         audio.tags.add(TALB(encoding=3, text=album))
-        
+
         date = metadata.get('date')
         if date:
             audio.tags.add(TDRC(encoding=3, text=date))
-            
+
         uslt = metadata.get('uslt')
         if uslt:
             audio.tags.add(USLT(encoding=3, lang='eng', desc='', text=uslt))
-            
+
         if cover_path and cover_path.exists():
             with open(cover_path, 'rb') as f:
                 cover_data = f.read()
             audio.tags.add(APIC(encoding=3, mime='image/jpeg', type=3, desc='Cover', data=cover_data))
-        
+
         audio.save()
 
         # 3. 读取处理后的数据
