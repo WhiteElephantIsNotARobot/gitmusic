@@ -262,7 +262,8 @@ def process_file(audio_file, rel_path, metadata_index, metadata_list, cache_root
         # 查找是否已存在 (严格按音频流哈希匹配)
         existing = metadata_index.get(audio_oid)
 
-        now = datetime.now(datetime.UTC).isoformat().replace('+00:00', 'Z')
+        # 使用兼容性更好的方式获取 UTC 时间戳
+        now = datetime.now().isoformat() + 'Z'
 
         result = {
             'filename': audio_file.name,
@@ -286,11 +287,10 @@ def process_file(audio_file, rel_path, metadata_index, metadata_list, cache_root
                 for field in ['title', 'artists', 'album', 'date', 'uslt']:
                     new_val = metadata.get(field)
                     old_val = existing.get(field)
-                    if new_val != old_val:
-                        # 只有当新值存在且不同，或者旧值存在但新值变为空时才算变化
-                        if new_val or old_val:
-                            has_changes = True
-                            break
+                    # 关键修复：如果 metadata 中没有该字段（None），不应视为变更
+                    if new_val is not None and new_val != old_val:
+                        has_changes = True
+                        break
 
             if not has_changes:
                 result['action'] = 'no_change'
@@ -457,9 +457,11 @@ def main():
             result = future.result()
             if result:
                 processed_results.append(result)
-                # 合并日志：动作 + 文件名
-                action_str = "更新" if result['action'] == 'updated' else "新增"
-                logger.info(f"{action_str}: {result['rel_path']}")
+                # 只有真正变动了才打印日志
+                if result['action'] == 'added':
+                    logger.info(f"新增: {result['rel_path']}")
+                elif result['action'] == 'updated':
+                    logger.info(f"更新: {result['rel_path']}")
             else:
                 logger.error(f"✗ 失败: {future_to_file[future].name}")
 
@@ -472,19 +474,17 @@ def main():
         logger.error("没有文件被成功处理")
         return
 
-    # 保存 metadata
-    save_metadata(metadata_file, metadata_list)
-    logger.info(f"Metadata 已保存到: {metadata_file}")
-
-    # 统计结果
+    # 统计实际变动
     added_count = len([r for r in processed_results if r['action'] == 'added'])
     updated_count = len([r for r in processed_results if r['action'] == 'updated'])
+    total_changed = added_count + updated_count
 
-    logger.info(f"处理成功: {len(processed_results)}/{len(audio_files)} 个文件")
-    logger.info(f"  新增: {added_count} 个")
-    logger.info(f"  更新: {updated_count} 个")
-
-    # 删除 work 中的文件
+    # 只有在有变动时才保存
+    if total_changed > 0:
+        save_metadata(metadata_file, metadata_list)
+        logger.info(f"Metadata 已保存到: {metadata_file}")
+    else:
+        logger.info("没有元数据变更，跳过保存。")
     logger.info("删除已处理的work文件...")
     to_delete = [r for r in processed_results if r['action'] != 'no_change']
     total_del = len(to_delete)
@@ -521,7 +521,7 @@ def main():
     progress_mgr.close() # 显式关闭删空目录进度条
 
     # Git 操作
-    if not args.no_git:
+    if not args.no_git and total_changed > 0:
         logger.info("执行 git 操作...")
         os.chdir(repo_root)
 
@@ -529,14 +529,15 @@ def main():
         subprocess.run(['git', 'add', 'metadata.jsonl'], check=False)
 
         # 提交
-        if processed_results:
-            commit_msg = f"Update metadata ({len(processed_results)} files)"
-            subprocess.run(['git', 'commit', '-m', commit_msg], check=False)
+        commit_msg = f"Update metadata ({total_changed} files)"
+        subprocess.run(['git', 'commit', '-m', commit_msg], check=False)
 
         # 推送
         subprocess.run(['git', 'push'], check=False)
 
         logger.info("Git 操作完成")
+    elif not args.no_git:
+        logger.info("没有元数据变更，跳过 Git 操作。")
 
     # 关闭进度条
     progress_mgr.close()
