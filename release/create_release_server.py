@@ -31,66 +31,75 @@ except ImportError:
 
 
 def embed_metadata(audio_path, metadata, cover_path=None):
-    """嵌入元数据到音频文件（强制重构模式）"""
-    tmp_clean = None
+    """嵌入元数据到音频文件（带终极容错逻辑）"""
+    tmp_path = None
     try:
-        # 1. 使用 ffmpeg 剥离所有原始标签，生成一个绝对干净的流
-        fd, tmp_clean_path = tempfile.mkstemp(suffix='.clean.mp3')
+        # 创建临时文件
+        fd, path_str = tempfile.mkstemp(suffix='.mp3')
         os.close(fd)
-        tmp_clean = Path(tmp_clean_path)
+        tmp_path = Path(path_str)
 
-        cmd = [
-            'ffmpeg', '-y', '-i', str(audio_path),
-            '-map', '0:a', '-c', 'copy',
-            '-map_metadata', '-1',
-            str(tmp_clean)
-        ]
-        subprocess.run(cmd, capture_output=True, check=True)
+        # 复制音频到临时文件
+        shutil.copy2(audio_path, tmp_path)
 
-        # 2. 使用 ID3 直接在干净的文件上构建新标签
-        from mutagen.id3 import ID3, TPE1, TIT2, TALB, TDRC, USLT, APIC
-        
-        # 创建一个空的 ID3 标签对象
-        tags = ID3()
-        
-        artists = metadata.get('artists', [])
-        if artists:
-            tags.add(TPE1(encoding=3, text=artists if isinstance(artists, list) else [artists]))
-        
-        title = metadata.get('title', '未知')
-        tags.add(TIT2(encoding=3, text=title))
-        
-        album = metadata.get('album') or title
-        tags.add(TALB(encoding=3, text=album))
-        
-        date = metadata.get('date')
-        if date:
-            tags.add(TDRC(encoding=3, text=date))
+        def do_embed(target_path):
+            # 尝试使用 MP3 包装器
+            audio = MP3(str(target_path))
+            if audio.tags is None:
+                audio.add_tags()
+            audio.delete()
             
-        uslt = metadata.get('uslt')
-        if uslt:
-            tags.add(USLT(encoding=3, lang='eng', desc='', text=uslt))
-            
-        if cover_path and cover_path.exists():
-            with open(cover_path, 'rb') as f:
-                cover_data = f.read()
-            tags.add(APIC(encoding=3, mime='image/jpeg', type=3, desc='Cover', data=cover_data))
-        
-        # 直接保存标签到干净的文件
-        tags.save(str(tmp_clean))
+            artists = metadata.get('artists', [])
+            if artists:
+                audio.tags.add(TPE1(encoding=3, text=artists if isinstance(artists, list) else [artists]))
+            title = metadata.get('title')
+            if title:
+                audio.tags.add(TIT2(encoding=3, text=title))
+            album = metadata.get('album') or title
+            if album:
+                audio.tags.add(TALB(encoding=3, text=album))
+            date = metadata.get('date')
+            if date:
+                audio.tags.add(TDRC(encoding=3, text=date))
+            uslt = metadata.get('uslt')
+            if uslt:
+                audio.tags.add(USLT(encoding=3, lang='eng', desc='', text=uslt))
+            if cover_path and cover_path.exists():
+                with open(cover_path, 'rb') as f:
+                    cover_data = f.read()
+                audio.tags.add(APIC(encoding=3, mime='image/jpeg', type=3, desc='Cover', data=cover_data))
+            audio.save()
 
-        # 3. 读取处理后的数据
-        with open(tmp_clean, 'rb') as f:
+        try:
+            # 尝试标准嵌入
+            do_embed(tmp_path)
+        except Exception as e:
+            if "null byte" in str(e):
+                logger.warning(f"检测到损坏标签，尝试强制剥离并重构: {metadata.get('title')}")
+                # 使用 ffmpeg 剥离所有标签
+                clean_tmp_path = tmp_path.with_suffix('.clean.mp3')
+                cmd = ['ffmpeg', '-y', '-i', str(tmp_path), '-map', '0:a', '-c', 'copy', '-map_metadata', '-1', str(clean_tmp_path)]
+                subprocess.run(cmd, capture_output=True, check=True)
+                
+                # 在干净的文件上重新尝试
+                do_embed(clean_tmp_path)
+                shutil.move(str(clean_tmp_path), str(tmp_path))
+            else:
+                raise
+
+        # 读取结果数据
+        with open(tmp_path, 'rb') as f:
             data = f.read()
 
+        if tmp_path.exists():
+            os.unlink(tmp_path)
         return data
 
     except Exception as e:
         logger.error(f"嵌入元数据失败: {e}")
+        if tmp_path and tmp_path.exists():
+            os.unlink(tmp_path)
         raise
-    finally:
-        if tmp_clean and tmp_clean.exists():
-            tmp_clean.unlink()
 
 
 def get_work_filename(metadata):
@@ -170,7 +179,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--data-root', default='/srv/music/data')
     parser.add_argument('--releases-root', default='/srv/music/data/releases')
-    parser.add_argument('--workers', type=int, default=1)
+    parser.add_argument('--workers', type=int, default=4)
     args = parser.parse_args()
 
     data_root = Path(args.data_root)
