@@ -391,7 +391,6 @@ def main():
 
     parser = argparse.ArgumentParser(description='扫描 work 目录并更新 metadata.jsonl')
     parser.add_argument('files', nargs='*', help='指定要处理的文件（可选）')
-    parser.add_argument('--no-git', action='store_true', help='不自动执行 git 操作')
     args = parser.parse_args()
 
     # 确定工作目录
@@ -550,24 +549,7 @@ def main():
     remove_empty_dirs(work_dir)
     progress_mgr.close() # 显式关闭删空目录进度条
 
-    # Git 操作
-    if not args.no_git and total_changed > 0:
-        logger.info("执行 git 操作...")
-        os.chdir(repo_root)
-
-        # 添加
-        subprocess.run(['git', 'add', 'metadata.jsonl'], check=False)
-
-        # 提交
-        commit_msg = f"Update metadata ({total_changed} files)"
-        subprocess.run(['git', 'commit', '-m', commit_msg], check=False)
-
-        # 推送
-        subprocess.run(['git', 'push'], check=False)
-
-        logger.info("Git 操作完成")
-    elif not args.no_git:
-        logger.info("没有元数据变更，跳过 Git 操作。")
+    # Git 操作已移除
 
     # 关闭进度条
     progress_mgr.close()
@@ -576,6 +558,7 @@ def main():
     print("接下来可以:")
     print("1. 运行 repo/release/create_release_local.py 生成成品")
     print("2. 运行 repo/data/sync_cache.py 同步到远端")
+    print("3. 手动执行 git add/commit/push")
 
 
 if __name__ == "__main__":
