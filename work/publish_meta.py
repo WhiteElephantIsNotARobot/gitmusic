@@ -110,20 +110,36 @@ def extract_audio_stream(audio_path):
 
 
 def extract_cover(audio_path):
-    """提取封面图片并计算哈希"""
+    """提取封面图片并计算哈希 (优先 ffmpeg，备选 mutagen)"""
+    # 方案 A: ffmpeg
     try:
         cmd = [
             'ffmpeg', '-i', str(audio_path), '-map', '0:v',
             '-map', '-0:V', '-c', 'copy', '-f', 'image2', 'pipe:1'
         ]
         result = subprocess.run(cmd, capture_output=True, check=True)
-        if result.stdout:
+        if result.stdout and len(result.stdout) > 100: # 确保不是空数据
             cover_data = result.stdout
-            cover_hash = hashlib.sha256(cover_data).hexdigest()
-            return cover_data, cover_hash
-        return None, None
-    except subprocess.CalledProcessError:
-        return None, None
+            return cover_data, hashlib.sha256(cover_data).hexdigest()
+    except:
+        pass
+
+    # 方案 B: mutagen (直接读取 APIC 帧)
+    try:
+        audio = File(audio_path)
+        if hasattr(audio, 'tags') and audio.tags:
+            if isinstance(audio.tags, ID3):
+                for frame in audio.tags.values():
+                    if frame.FrameID == 'APIC':
+                        cover_data = frame.data
+                        return cover_data, hashlib.sha256(cover_data).hexdigest()
+            elif 'covr' in audio.tags: # MP4/M4A
+                cover_data = audio.tags['covr'][0]
+                return cover_data, hashlib.sha256(cover_data).hexdigest()
+    except:
+        pass
+
+    return None, None
 
 
 def split_artists(artists_str):
@@ -243,10 +259,10 @@ def process_file(audio_file, rel_path, metadata_index, metadata_list, cache_root
         # 解析元数据
         metadata = parse_metadata(audio_file)
 
-        # 查找是否已存在 (使用索引字典)
+        # 查找是否已存在 (严格按音频流哈希匹配)
         existing = metadata_index.get(audio_oid)
 
-        now = datetime.utcnow().isoformat() + 'Z'
+        now = datetime.now(datetime.UTC).isoformat().replace('+00:00', 'Z')
 
         result = {
             'filename': audio_file.name,
@@ -283,7 +299,7 @@ def process_file(audio_file, rel_path, metadata_index, metadata_list, cache_root
             # 执行更新
             result['action'] = 'updated'
             existing['audio_oid'] = audio_oid
-            
+
             # 更新字段
             for field in ['title', 'artists', 'album', 'date', 'uslt']:
                 value = metadata.get(field)
@@ -449,6 +465,9 @@ def main():
 
             progress_mgr.set_progress(completed, total_files, "处理中")
 
+    # 显式关闭处理进度条
+    progress_mgr.close()
+
     if not processed_results:
         logger.error("没有文件被成功处理")
         return
@@ -476,7 +495,8 @@ def main():
             if work_file.exists():
                 work_file.unlink()
             progress_mgr.set_progress(idx, total_del, "清理中")
-    
+        progress_mgr.close() # 显式关闭清理进度条
+
     logger.info("清理空文件夹...")
 
     def remove_empty_dirs(path):
@@ -498,6 +518,7 @@ def main():
                 progress_mgr.set_progress(idx, len(empty_dirs), "删空目录")
 
     remove_empty_dirs(work_dir)
+    progress_mgr.close() # 显式关闭删空目录进度条
 
     # Git 操作
     if not args.no_git:
