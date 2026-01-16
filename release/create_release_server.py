@@ -170,7 +170,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--data-root', default='/srv/music/data')
     parser.add_argument('--releases-root', default='/srv/music/data/releases')
-    parser.add_argument('--workers', type=int, default=2)
+    parser.add_argument('--workers', type=int, default=1)
     args = parser.parse_args()
 
     data_root = Path(args.data_root)
