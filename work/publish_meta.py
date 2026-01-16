@@ -254,10 +254,26 @@ def process_file(audio_file, rel_path, metadata_index, metadata_list, cache_root
         }
 
         if existing:
-            # 更新现有条目
-            result['action'] = 'updated'
+            # 检查是否有实际变更
+            has_changes = False
 
-            # 保留不变的字段
+            # 检查封面是否有变化
+            if new_cover_oid != existing.get('cover_oid'):
+                has_changes = True
+
+            # 检查其他字段是否有变化
+            if not has_changes:
+                for field in ['title', 'artists', 'album', 'date', 'uslt']:
+                    if metadata.get(field) != existing.get(field):
+                        has_changes = True
+                        break
+
+            if not has_changes:
+                result['action'] = 'no_change'
+                return result
+
+            # 执行更新
+            result['action'] = 'updated'
             existing['audio_oid'] = audio_oid
             existing['created_at'] = existing.get('created_at', now)
 
@@ -269,7 +285,7 @@ def process_file(audio_file, rel_path, metadata_index, metadata_list, cache_root
                 elif field in existing:
                     del existing[field]
 
-            # 确保 title 和 artists 不为空（如果为空则保留原有值或设置默认值）
+            # 确保 title 和 artists 不为空
             if 'title' not in existing or not existing['title']:
                 existing['title'] = metadata.get('title', '未知')
             if 'artists' not in existing or not existing['artists']:
@@ -280,13 +296,10 @@ def process_file(audio_file, rel_path, metadata_index, metadata_list, cache_root
             # 处理封面
             if new_cover_oid:
                 existing['cover_oid'] = new_cover_oid
-                # 保存新封面到 cache
                 if cover_data:
                     save_to_cache(cover_data, new_cover_oid, cache_root, 'covers')
-            else:
-                # 如果新条目没有封面，删除旧的封面引用
-                if 'cover_oid' in existing:
-                    del existing['cover_oid']
+            elif 'cover_oid' in existing:
+                del existing['cover_oid']
         else:
             # 新增条目
             result['action'] = 'added'

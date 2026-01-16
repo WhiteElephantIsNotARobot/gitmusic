@@ -150,7 +150,7 @@ def find_object(oid, data_root):
     return None
 
 
-def process_single_item(item, data_root, releases_root, only_changed=False):
+def process_single_item(item, data_root, releases_root):
     """处理单个 metadata 条目"""
     try:
         audio_oid = item.get('audio_oid')
@@ -161,10 +161,6 @@ def process_single_item(item, data_root, releases_root, only_changed=False):
         filename = get_work_filename(item)
         filename = sanitize_filename(filename)
         dest_path = releases_root / filename
-
-        # 如果开启了 only_changed，且文件已存在，则跳过
-        if only_changed and dest_path.exists():
-            return True
 
         # 查找音频文件
         audio_path = find_object(audio_oid, data_root)
@@ -188,6 +184,17 @@ def process_single_item(item, data_root, releases_root, only_changed=False):
 
         # 原子替换
         shutil.move(str(temp_path), str(dest_path))
+
+        # 设置文件时间为元数据中的更新/创建时间
+        try:
+            dt_str = item.get('updated_at') or item.get('created_at')
+            if dt_str:
+                dt = datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
+                ts = dt.timestamp()
+                os.utime(dest_path, (ts, ts))
+        except Exception as e:
+            logger.warning(f"设置文件时间失败 {filename}: {e}")
+
         logger.info(f"✓ 生成: {filename}")
 
         return True
@@ -221,7 +228,6 @@ def main():
     parser.add_argument('--data-root', default='/srv/music/data', help='数据根目录')
     parser.add_argument('--releases-root', default='/srv/music/data/releases', help='成品目录')
     parser.add_argument('--metadata', help='指定 metadata.jsonl 路径（可选）')
-    parser.add_argument('--only-changed', action='store_true', help='只处理不存在的条目')
     parser.add_argument('--workers', type=int, default=4, help='并行工作进程数')
     args = parser.parse_args()
 
@@ -253,7 +259,7 @@ def main():
     # 并行处理
     success_count = 0
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
-        futures = [executor.submit(process_single_item, item, data_root, releases_root, args.only_changed) for item in metadata_list]
+        futures = [executor.submit(process_single_item, item, data_root, releases_root) for item in metadata_list]
 
         for future in as_completed(futures):
             if future.result():

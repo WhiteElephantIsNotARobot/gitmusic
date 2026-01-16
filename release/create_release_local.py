@@ -221,6 +221,17 @@ def create_release_item(metadata_item, output_dir):
         shutil.move(temp_path, final_temp)
         final_temp.replace(output_path)
 
+        # 设置文件时间为元数据中的更新/创建时间
+        try:
+            dt_str = metadata_item.get('updated_at') or metadata_item.get('created_at')
+            if dt_str:
+                # 解析 ISO 格式时间 (处理 Z 结尾)
+                dt = datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
+                ts = dt.timestamp()
+                os.utime(output_path, (ts, ts))
+        except Exception as e:
+            logger.warning(f"设置文件时间失败 {filename}: {e}")
+
         logger.info(f"✓ 生成: {filename}")
         return True
 
