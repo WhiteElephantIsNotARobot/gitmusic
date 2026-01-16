@@ -225,7 +225,6 @@ def show_duplicate_details(metadata_list):
                 logger.error(f"    title: {item.get('title')}")
                 logger.error(f"    artists: {item.get('artists')}")
                 logger.error(f"    created_at: {item.get('created_at')}")
-                logger.error(f"    updated_at: {item.get('updated_at')}")
                 logger.error(f"    cover_oid: {item.get('cover_oid', '无')}")
 
 

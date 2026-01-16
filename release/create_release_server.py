@@ -23,11 +23,19 @@ logger = logging.getLogger(__name__)
 
 # 尝试导入 mutagen
 try:
-    from mutagen.id3 import ID3, TPE1, TIT2, TALB, TDRC, USLT, APIC
+    from mutagen.id3 import ID3, TPE1, TIT2, TALB, TDRC, USLT, APIC, TXXX
     from mutagen.mp3 import MP3
 except ImportError:
     logger.error("错误: mutagen 库未安装")
     exit(1)
+
+
+def get_metadata_hash(item):
+    """计算元数据条目的哈希值，用于增量对比"""
+    # 排除掉 created_at 等时间戳字段，只针对内容哈希
+    content = {k: v for k, v in item.items() if k not in ['created_at', 'updated_at']}
+    s = json.dumps(content, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(s.encode('utf-8')).hexdigest()
 
 
 def embed_metadata(audio_path, metadata, cover_path=None):
@@ -41,9 +49,6 @@ def embed_metadata(audio_path, metadata, cover_path=None):
         shutil.copy2(audio_path, tmp_file)
 
         # 2. 使用 mutagen 处理标签
-        from mutagen.mp3 import MP3
-        from mutagen.id3 import ID3, TPE1, TIT2, TALB, TDRC, USLT, APIC
-
         audio = MP3(tmp_file)
 
         # 确保有 ID3 标签并清除旧标签
@@ -74,6 +79,10 @@ def embed_metadata(audio_path, metadata, cover_path=None):
             with open(cover_path, 'rb') as f:
                 cover_data = f.read()
             audio.tags.add(APIC(encoding=3, mime='image/jpeg', type=3, desc='Cover', data=cover_data))
+
+        # 写入自定义标签：元数据哈希
+        meta_hash = get_metadata_hash(metadata)
+        audio.tags.add(TXXX(encoding=3, desc='METADATA_HASH', text=[meta_hash]))
 
         # 保存标签
         audio.save()
@@ -152,8 +161,8 @@ def process_single_item(item, data_root, releases_root):
         # 原子替换
         shutil.move(str(tmp_dest), str(dest_path))
 
-        # 同步时间戳
-        dt_str = item.get('updated_at') or item.get('created_at')
+        # 同步时间戳 (仅使用 created_at)
+        dt_str = item.get('created_at')
         if dt_str:
             dt = datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
             ts = dt.timestamp()
@@ -172,7 +181,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--data-root', default='/srv/music/data')
     parser.add_argument('--releases-root', default='/srv/music/data/releases')
-    parser.add_argument('--workers', type=int, default=1)
+    parser.add_argument('--workers', type=int, default=4)
     args = parser.parse_args()
 
     data_root = Path(args.data_root)
@@ -182,17 +191,57 @@ def main():
     if not metadata_file.exists(): return
     releases_root.mkdir(parents=True, exist_ok=True)
 
+    # 1. 加载元数据并计算哈希
     with open(metadata_file, 'r', encoding='utf-8') as f:
         metadata_list = [json.loads(line) for line in f if line.strip()]
 
-    logger.info(f"开始生成 {len(metadata_list)} 个条目...")
+    target_hashes = {get_metadata_hash(item): item for item in metadata_list}
+    # 建立 文件名 -> 哈希 的映射，用于清理
+    target_filenames = {sanitize_filename(get_work_filename(item)): get_metadata_hash(item) for item in metadata_list}
+
+    # 2. 扫描现有文件
+    logger.info("扫描现有成品文件...")
+    existing_files = list(releases_root.glob('*.mp3'))
+    files_to_delete = []
+    valid_existing_hashes = set()
+
+    for file_path in existing_files:
+        try:
+            audio = MP3(file_path)
+            # 读取嵌入的哈希
+            meta_hash = ""
+            if audio.tags and 'TXXX:METADATA_HASH' in audio.tags:
+                meta_hash = str(audio.tags['TXXX:METADATA_HASH'].text[0])
+
+            # 如果文件不在目标列表中，或者哈希不匹配，则标记为删除
+            if file_path.name not in target_filenames or target_filenames[file_path.name] != meta_hash:
+                files_to_delete.append(file_path)
+            else:
+                valid_existing_hashes.add(meta_hash)
+        except Exception:
+            files_to_delete.append(file_path)
+
+    # 3. 执行清理
+    if files_to_delete:
+        logger.info(f"清理 {len(files_to_delete)} 个过时或无效文件...")
+        for f in files_to_delete:
+            f.unlink()
+
+    # 4. 确定需要生成的文件
+    to_generate = [item for item in metadata_list if get_metadata_hash(item) not in valid_existing_hashes]
+
+    if not to_generate:
+        logger.info("所有成品已是最新，无需生成。")
+        return
+
+    logger.info(f"开始增量生成 {len(to_generate)} 个条目 (总计 {len(metadata_list)})...")
     success = 0
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
-        futures = [executor.submit(process_single_item, item, data_root, releases_root) for item in metadata_list]
+        futures = [executor.submit(process_single_item, item, data_root, releases_root) for item in to_generate]
         for future in as_completed(futures):
             if future.result(): success += 1
 
-    logger.info(f"完成！成功: {success}/{len(metadata_list)}")
+    logger.info(f"完成！成功: {success}/{len(to_generate)}")
 
 
 if __name__ == "__main__":

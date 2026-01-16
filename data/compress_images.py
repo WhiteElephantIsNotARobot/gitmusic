@@ -193,7 +193,6 @@ def main():
 
                 # 更新 metadata
                 metadata['cover_oid'] = f"sha256:{new_hash}"
-                metadata['updated_at'] = metadata.get('updated_at', metadata.get('created_at', ''))
 
                 logger.info(f"压缩并更新封面: {old_oid[:8]}... -> {new_hash[:8]}... ({old_size/1024:.1f}KB → {new_size/1024:.1f}KB)")
                 updated_count += 1

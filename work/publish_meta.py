@@ -268,7 +268,7 @@ def process_file(audio_file, rel_path, metadata_index, metadata_list, cache_root
         result = {
             'filename': audio_file.name,
             'rel_path': str(rel_path),
-            'action': None,  # 'added' or 'updated'
+            'action': None,  # 'added', 'updated', or 'no_change'
             'title': metadata.get('title', '未知'),
             'artists': metadata.get('artists', []),
             'audio_oid': audio_oid
@@ -287,7 +287,7 @@ def process_file(audio_file, rel_path, metadata_index, metadata_list, cache_root
                 for field in ['title', 'artists', 'album', 'date', 'uslt']:
                     new_val = metadata.get(field)
                     old_val = existing.get(field)
-                    # 关键修复：如果 metadata 中没有该字段（None），不应视为变更
+                    # 只有当新值存在且不同，或者旧值存在但新值变为空时才算变化
                     if new_val is not None and new_val != old_val:
                         has_changes = True
                         break
@@ -312,8 +312,6 @@ def process_file(audio_file, rel_path, metadata_index, metadata_list, cache_root
             if not existing.get('title'): existing['title'] = '未知'
             if not existing.get('artists'): existing['artists'] = []
 
-            existing['updated_at'] = now
-
             # 处理封面：只有提取到新封面才更新，没提取到则保留原样
             if new_cover_oid:
                 existing['cover_oid'] = new_cover_oid
@@ -324,8 +322,7 @@ def process_file(audio_file, rel_path, metadata_index, metadata_list, cache_root
             result['action'] = 'added'
             new_item = {
                 'audio_oid': audio_oid,
-                'created_at': now,
-                'updated_at': now
+                'created_at': now
             }
 
             # 只添加非空字段
@@ -485,8 +482,14 @@ def main():
         logger.info(f"Metadata 已保存到: {metadata_file}")
     else:
         logger.info("没有元数据变更，跳过保存。")
+
+    logger.info(f"处理成功: {len(processed_results)}/{len(audio_files)} 个文件")
+    logger.info(f"  新增: {added_count} 个")
+    logger.info(f"  更新: {updated_count} 个")
+
+    # 删除 work 中的文件 (只要处理成功了就删除，无论是否有元数据变更)
     logger.info("删除已处理的work文件...")
-    to_delete = [r for r in processed_results if r['action'] != 'no_change']
+    to_delete = [r for r in processed_results if r['action'] is not None]
     total_del = len(to_delete)
     if total_del > 0:
         progress_mgr.set_progress(0, total_del, "清理中")

@@ -222,9 +222,9 @@ def create_release_item(metadata_item, output_dir):
         shutil.move(temp_path, final_temp)
         final_temp.replace(output_path)
 
-        # 设置文件时间为元数据中的更新/创建时间
+        # 设置文件时间为元数据中的创建时间
         try:
-            dt_str = metadata_item.get('updated_at') or metadata_item.get('created_at')
+            dt_str = metadata_item.get('created_at')
             if dt_str:
                 # 解析 ISO 格式时间 (处理 Z 结尾)
                 dt = datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
@@ -272,7 +272,14 @@ def main():
         else:
             logger.error("单个文件生成失败")
     else:
-        # 生成所有文件
+        # 生成所有文件前，先清空输出目录
+        logger.info(f"正在清空输出目录: {output_dir}")
+        for f in output_dir.glob('*.mp3'):
+            try:
+                f.unlink()
+            except Exception as e:
+                logger.warning(f"无法删除文件 {f}: {e}")
+
         success_count = 0
         total_count = len(metadata)
         logger.info(f"开始生成 {total_count} 个成品文件...")
