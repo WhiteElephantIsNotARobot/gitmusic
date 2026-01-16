@@ -29,6 +29,7 @@ except ImportError:
 
 def embed_metadata(audio_path, metadata, cover_path=None):
     """嵌入元数据到音频文件"""
+    tmp_path = None
     try:
         # 创建临时文件
         with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as tmp:
@@ -38,7 +39,9 @@ def embed_metadata(audio_path, metadata, cover_path=None):
         shutil.copy2(audio_path, tmp_path)
 
         # 使用 mutagen 嵌入 metadata
-        audio = MP3(tmp_path)
+        # 显式转换为字符串路径，并确保没有 null byte
+        path_str = str(tmp_path.absolute()).replace('\0', '')
+        audio = MP3(path_str)
 
         # 确保有 ID3 标签
         if audio.tags is None:
@@ -51,27 +54,29 @@ def embed_metadata(audio_path, metadata, cover_path=None):
         # 艺术家
         artists = metadata.get('artists', [])
         if artists:
-            audio.tags.add(TPE1(encoding=3, text=artists if isinstance(artists, list) else [artists]))
+            # 清理艺术家字符串中的 null byte
+            clean_artists = [str(a).replace('\0', '') for a in (artists if isinstance(artists, list) else [artists])]
+            audio.tags.add(TPE1(encoding=3, text=clean_artists))
 
         # 标题
-        title = metadata.get('title')
+        title = str(metadata.get('title', '未知')).replace('\0', '')
         if title:
             audio.tags.add(TIT2(encoding=3, text=title))
 
         # 专辑（如果没有，使用标题填充）
-        album = metadata.get('album')
+        album = str(metadata.get('album', '')).replace('\0', '')
         if not album:
             album = title
         if album:
             audio.tags.add(TALB(encoding=3, text=album))
 
         # 日期
-        date = metadata.get('date')
+        date = str(metadata.get('date', '')).replace('\0', '')
         if date:
             audio.tags.add(TDRC(encoding=3, text=date))
 
         # 歌词
-        uslt = metadata.get('uslt')
+        uslt = str(metadata.get('uslt', '')).replace('\0', '')
         if uslt:
             audio.tags.add(USLT(encoding=3, lang='eng', desc='', text=uslt))
 
@@ -98,9 +103,13 @@ def embed_metadata(audio_path, metadata, cover_path=None):
         return data
 
     except Exception as e:
-        logger.error(f"嵌入元数据失败: {e}")
-        if 'tmp_path' in locals() and tmp_path.exists():
+        if tmp_path and tmp_path.exists():
             os.unlink(tmp_path)
+        # 如果是 embedded null byte 错误，打印更多信息
+        if "embedded null byte" in str(e):
+            logger.error(f"嵌入元数据失败 (Null Byte): {metadata.get('title')} - {e}")
+        else:
+            logger.error(f"嵌入元数据失败: {e}")
         raise
 
 
