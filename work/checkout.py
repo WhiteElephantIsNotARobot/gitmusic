@@ -161,9 +161,15 @@ def get_work_filename(metadata):
 
     if artists:
         artist_str = ', '.join(artists)
-        return f"{artist_str} - {title}.mp3"
+        filename = f"{artist_str} - {title}.mp3"
     else:
-        return f"{title}.mp3"
+        filename = f"{title}.mp3"
+
+    # 彻底移除空字符并清理非法路径字符，防止产生意外的子目录
+    filename = filename.replace('\x00', '')
+    for char in ['<', '>', ':', '"', '/', '\\', '|', '?', '*']:
+        filename = filename.replace(char, '_')
+    return filename.strip()
 
 
 def checkout_by_oid(oid, work_dir, cache_root):
