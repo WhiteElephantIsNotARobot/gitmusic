@@ -31,7 +31,7 @@ except ImportError:
 
 
 def embed_metadata(audio_path, metadata, cover_path=None):
-    """嵌入元数据到音频文件（带自动修复逻辑）"""
+    """嵌入元数据到音频文件（彻底重构标签模式）"""
     tmp_path = None
     try:
         # 确保路径是干净的字符串
@@ -45,57 +45,47 @@ def embed_metadata(audio_path, metadata, cover_path=None):
         # 复制音频到临时文件
         shutil.copy2(audio_path_str, str(tmp_path))
 
-        def do_embed(target_path_str):
-            # 显式使用字符串路径
-            audio = MP3(target_path_str)
-            if audio.tags is None:
-                audio.add_tags()
-            audio.delete()
-            
-            # 清洗元数据字符串，确保没有 null byte
-            def clean(s):
-                return str(s).replace('\0', '') if s else ""
-
-            artists = metadata.get('artists', [])
-            if artists:
-                clean_artists = [clean(a) for a in artists] if isinstance(artists, list) else [clean(artists)]
-                audio.tags.add(TPE1(encoding=3, text=clean_artists))
-            
-            title = clean(metadata.get('title') or "未知")
-            audio.tags.add(TIT2(encoding=3, text=title))
-            
-            album = clean(metadata.get('album')) or title
-            audio.tags.add(TALB(encoding=3, text=album))
-            
-            date = clean(metadata.get('date'))
-            if date:
-                audio.tags.add(TDRC(encoding=3, text=date))
-            
-            uslt = clean(metadata.get('uslt'))
-            if uslt:
-                audio.tags.add(USLT(encoding=3, lang='eng', desc='', text=uslt))
-            
-            if cover_path and cover_path.exists():
-                with open(str(cover_path), 'rb') as f:
-                    cover_data = f.read()
-                audio.tags.add(APIC(encoding=3, mime='image/jpeg', type=3, desc='Cover', data=cover_data))
-            
-            audio.save()
-
+        # 1. 彻底删除所有原始标签
+        from mutagen.id3 import ID3, TPE1, TIT2, TALB, TDRC, USLT, APIC
         try:
-            do_embed(str(tmp_path))
-        except Exception as e:
-            if "null byte" in str(e):
-                logger.warning(f"检测到损坏标签，尝试强制剥离并重构: {metadata.get('title')}")
-                clean_tmp_path = str(tmp_path) + ".clean.mp3"
-                # 使用绝对路径调用 ffmpeg
-                cmd = ['ffmpeg', '-y', '-i', str(tmp_path), '-map', '0:a', '-c', 'copy', '-map_metadata', '-1', clean_tmp_path]
-                subprocess.run(cmd, capture_output=True, check=True)
-                
-                do_embed(clean_tmp_path)
-                shutil.move(clean_tmp_path, str(tmp_path))
-            else:
-                raise
+            tags = ID3(str(tmp_path))
+            tags.delete()
+        except Exception:
+            pass
+        
+        # 2. 创建全新的标签对象
+        tags = ID3()
+        
+        # 清洗元数据字符串
+        def clean(s):
+            return str(s).replace('\0', '') if s else ""
+
+        artists = metadata.get('artists', [])
+        if artists:
+            clean_artists = [clean(a) for a in artists] if isinstance(artists, list) else [clean(artists)]
+            tags.add(TPE1(encoding=3, text=clean_artists))
+        
+        title = clean(metadata.get('title') or "未知")
+        tags.add(TIT2(encoding=3, text=title))
+        
+        album = clean(metadata.get('album')) or title
+        tags.add(TALB(encoding=3, text=album))
+        
+        date = clean(metadata.get('date'))
+        if date:
+            tags.add(TDRC(encoding=3, text=date))
+        
+        uslt = clean(metadata.get('uslt'))
+        if uslt:
+            tags.add(USLT(encoding=3, lang='eng', desc='', text=uslt))
+        
+        if cover_path and cover_path.exists():
+            with open(str(cover_path), 'rb') as f:
+                cover_data = f.read()
+            tags.add(APIC(encoding=3, mime='image/jpeg', type=3, desc='Cover', data=cover_data))
+        
+        # 3. 保存全新标签
+        tags.save(str(tmp_path))
 
         with open(str(tmp_path), 'rb') as f:
             data = f.read()
