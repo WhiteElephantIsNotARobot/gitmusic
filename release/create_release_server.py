@@ -27,6 +27,13 @@ except ImportError:
     exit(1)
 
 
+def clean_str(s):
+    """清理字符串，移除可能导致 embedded null byte 错误的字符"""
+    if s is None:
+        return ""
+    return str(s).replace('\0', '')
+
+
 def embed_metadata(audio_path, metadata, cover_path=None):
     """嵌入元数据到音频文件"""
     tmp_path = None
@@ -55,27 +62,31 @@ def embed_metadata(audio_path, metadata, cover_path=None):
         # 艺术家
         artists = metadata.get('artists', [])
         if artists:
-            audio.tags.add(TPE1(encoding=3, text=artists if isinstance(artists, list) else [artists]))
+            if isinstance(artists, list):
+                clean_artists = [clean_str(a) for a in artists]
+            else:
+                clean_artists = [clean_str(artists)]
+            audio.tags.add(TPE1(encoding=3, text=clean_artists))
 
         # 标题
-        title = metadata.get('title')
+        title = clean_str(metadata.get('title'))
         if title:
             audio.tags.add(TIT2(encoding=3, text=title))
 
         # 专辑（如果没有，使用标题填充）
-        album = metadata.get('album')
+        album = clean_str(metadata.get('album'))
         if not album:
             album = title
         if album:
             audio.tags.add(TALB(encoding=3, text=album))
 
         # 日期
-        date = metadata.get('date')
+        date = clean_str(metadata.get('date'))
         if date:
             audio.tags.add(TDRC(encoding=3, text=date))
 
         # 歌词
-        uslt = metadata.get('uslt')
+        uslt = clean_str(metadata.get('uslt'))
         if uslt:
             audio.tags.add(USLT(encoding=3, lang='eng', desc='', text=uslt))
 
