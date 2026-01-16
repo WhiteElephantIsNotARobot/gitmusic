@@ -221,7 +221,7 @@ def main():
     parser.add_argument('--data-root', default='/srv/music/data', help='数据根目录')
     parser.add_argument('--releases-root', default='/srv/music/data/releases', help='成品目录')
     parser.add_argument('--metadata', help='指定 metadata.jsonl 路径（可选）')
-    parser.add_argument('--workers', type=int, default=4, help='并行工作线程数')
+    parser.add_argument('--workers', type=int, default=1, help='并行工作线程数')
     args = parser.parse_args()
 
     data_root = Path(args.data_root)
