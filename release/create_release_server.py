@@ -50,6 +50,14 @@ def embed_metadata(audio_path, metadata, cover_path=None):
 
         # 2. 使用 mutagen 在干净的文件上构建新标签
         audio = MP3(str(tmp_clean))
+        try:
+            audio.add_tags()
+        except Exception:
+            # 标签已存在，忽略错误
+            pass
+        
+        # 清除现有标签并重新构建
+        audio.delete()
         audio.add_tags()
         
         artists = metadata.get('artists', [])
