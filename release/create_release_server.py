@@ -38,7 +38,7 @@ def embed_metadata(audio_path, metadata, cover_path=None):
     """嵌入元数据到音频文件"""
     tmp_path = None
     try:
-        # 创建临时文件，手动管理路径以避免 embedded null byte 问题
+        # 创建临时文件
         fd, path_str = tempfile.mkstemp(suffix='.mp3')
         os.close(fd)
         tmp_path = Path(path_str)
@@ -47,16 +47,20 @@ def embed_metadata(audio_path, metadata, cover_path=None):
         shutil.copy2(audio_path, tmp_path)
 
         # 使用 mutagen 嵌入 metadata
-        # 显式转换为绝对路径字符串，并确保没有 null byte
-        abs_tmp_path = os.path.abspath(str(tmp_path))
-        audio = MP3(abs_tmp_path)
+        # 显式使用 ID3 对象处理，避免 MP3 包装器可能的问题
+        from mutagen.id3 import ID3, TPE1, TIT2, TALB, TDRC, USLT, APIC
 
-        # 确保有 ID3 标签
-        if audio.tags is None:
-            audio.add_tags()
+        # 确保文件存在且可写
+        path_str = str(tmp_path.absolute())
 
-        # 清除现有 ID3 标签
-        audio.delete()
+        try:
+            tags = ID3(path_str)
+        except Exception:
+            # 如果没有标签，创建一个新的
+            tags = ID3()
+
+        # 清除现有标签
+        tags.delete(path_str)
 
         # 添加新的标签
         # 艺术家
@@ -66,57 +70,56 @@ def embed_metadata(audio_path, metadata, cover_path=None):
                 clean_artists = [clean_str(a) for a in artists]
             else:
                 clean_artists = [clean_str(artists)]
-            audio.tags.add(TPE1(encoding=3, text=clean_artists))
+            tags.add(TPE1(encoding=3, text=clean_artists))
 
         # 标题
         title = clean_str(metadata.get('title'))
         if title:
-            audio.tags.add(TIT2(encoding=3, text=title))
+            tags.add(TIT2(encoding=3, text=title))
 
-        # 专辑（如果没有，使用标题填充）
-        album = clean_str(metadata.get('album'))
-        if not album:
-            album = title
+        # 专辑
+        album = clean_str(metadata.get('album')) or title
         if album:
-            audio.tags.add(TALB(encoding=3, text=album))
+            tags.add(TALB(encoding=3, text=album))
 
         # 日期
         date = clean_str(metadata.get('date'))
         if date:
-            audio.tags.add(TDRC(encoding=3, text=date))
+            tags.add(TDRC(encoding=3, text=date))
 
         # 歌词
         uslt = clean_str(metadata.get('uslt'))
         if uslt:
-            audio.tags.add(USLT(encoding=3, lang='eng', desc='', text=uslt))
+            tags.add(USLT(encoding=3, lang='eng', desc='', text=uslt))
 
         # 封面
         if cover_path and cover_path.exists():
             with open(cover_path, 'rb') as f:
                 cover_data = f.read()
-            audio.tags.add(APIC(
+            tags.add(APIC(
                 encoding=3,
                 mime='image/jpeg',
-                type=3,  # Cover (front)
+                type=3,
                 desc='Cover',
                 data=cover_data
             ))
 
-        # 保存
-        audio.save()
+        # 保存标签
+        tags.save(path_str, v2_version=3)
 
         # 读取结果数据
-        with open(tmp_path, 'rb') as f:
+        with open(path_str, 'rb') as f:
             data = f.read()
 
-        if tmp_path.exists():
-            os.unlink(tmp_path)
+        if os.path.exists(path_str):
+            os.unlink(path_str)
         return data
 
     except Exception as e:
         logger.error(f"嵌入元数据失败: {e}")
         if tmp_path and os.path.exists(tmp_path):
-            os.unlink(tmp_path)
+            try: os.unlink(tmp_path)
+            except: pass
         raise
 
 
