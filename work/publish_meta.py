@@ -490,17 +490,29 @@ def main():
             pct = (count / len(updated_list)) * 100
             print(f"    - {field}: {pct:.1f}% ({count}次)")
 
-    # 智能列表输出
-    if len(added_list) > 0 or len(updated_list) > 0:
+    # 智能列表输出：只打印数量较少的那个列表（且不为0）
+    if total_changed > 0:
         print("-" * 40)
-        if len(added_list) > 0 and (len(added_list) <= len(updated_list) or len(updated_list) == 0):
-            print(f"新增列表 ({len(added_list)}个):")
-            for r in added_list:
-                print(f"  + {', '.join(r['artists'])} - {r['title']}")
+        # 逻辑：如果两个都有，选小的；如果只有一个，且数量不多(<=50)，则打印
+        if len(added_list) > 0 and len(updated_list) > 0:
+            if len(added_list) <= len(updated_list):
+                print(f"新增列表 ({len(added_list)}个):")
+                for r in added_list: print(f"  + {', '.join(r['artists'])} - {r['title']}")
+            else:
+                print(f"更新列表 ({len(updated_list)}个):")
+                for r in updated_list: print(f"  ~ {', '.join(r['artists'])} - {r['title']}")
+        elif len(added_list) > 0:
+            if len(added_list) <= 50:
+                print(f"新增列表 ({len(added_list)}个):")
+                for r in added_list: print(f"  + {', '.join(r['artists'])} - {r['title']}")
+            else:
+                print(f"新增条目较多 ({len(added_list)}个)，已省略详细列表。")
         elif len(updated_list) > 0:
-            print(f"更新列表 ({len(updated_list)}个):")
-            for r in updated_list:
-                print(f"  ~ {', '.join(r['artists'])} - {r['title']}")
+            if len(updated_list) <= 50:
+                print(f"更新列表 ({len(updated_list)}个):")
+                for r in updated_list: print(f"  ~ {', '.join(r['artists'])} - {r['title']}")
+            else:
+                print(f"更新条目较多 ({len(updated_list)}个)，已省略详细列表。")
     print("="*40 + "\n")
 
     # 删除 work 中的文件
