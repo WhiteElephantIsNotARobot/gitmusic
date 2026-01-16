@@ -99,8 +99,6 @@ def embed_metadata(audio_path, metadata, cover_path=None):
 
     except Exception as e:
         logger.error(f"嵌入元数据失败: {e}")
-        if 'tmp_path' in locals() and tmp_path.exists():
-            os.unlink(tmp_path)
         raise
 
 
@@ -118,6 +116,7 @@ def get_work_filename(metadata):
 
 def sanitize_filename(filename):
     """清理文件名中的非法字符"""
+    # 替换 Windows/Linux 非法字符
     for char in ['<', '>', ':', '"', '/', '\\', '|', '?', '*']:
         filename = filename.replace(char, '_')
     return filename
@@ -144,7 +143,7 @@ def find_object(oid, data_root):
     return None
 
 
-def process_single_item(item, data_root, releases_root):
+def process_single_item(item, data_root, releases_root, only_changed=False):
     """处理单个 metadata 条目"""
     try:
         audio_oid = item.get('audio_oid')
@@ -155,6 +154,10 @@ def process_single_item(item, data_root, releases_root):
         filename = get_work_filename(item)
         filename = sanitize_filename(filename)
         dest_path = releases_root / filename
+
+        # 如果开启了 only_changed，且文件已存在，则跳过
+        if only_changed and dest_path.exists():
+            return True
 
         # 查找音频文件
         audio_path = find_object(audio_oid, data_root)
@@ -178,18 +181,8 @@ def process_single_item(item, data_root, releases_root):
 
         # 原子替换
         shutil.move(str(temp_path), str(dest_path))
-
-        # 设置文件时间
-        try:
-            dt_str = item.get('updated_at') or item.get('created_at')
-            if dt_str:
-                dt = datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
-                ts = dt.timestamp()
-                os.utime(dest_path, (ts, ts))
-        except Exception:
-            pass
-
         logger.info(f"✓ 生成: {filename}")
+
         return True
 
     except Exception as e:
@@ -221,7 +214,8 @@ def main():
     parser.add_argument('--data-root', default='/srv/music/data', help='数据根目录')
     parser.add_argument('--releases-root', default='/srv/music/data/releases', help='成品目录')
     parser.add_argument('--metadata', help='指定 metadata.jsonl 路径（可选）')
-    parser.add_argument('--workers', type=int, default=1, help='并行工作线程数')
+    parser.add_argument('--only-changed', action='store_true', help='只处理不存在的条目')
+    parser.add_argument('--workers', type=int, default=4, help='并行工作进程数')
     args = parser.parse_args()
 
     data_root = Path(args.data_root)
@@ -230,7 +224,10 @@ def main():
     if args.metadata:
         metadata_file = Path(args.metadata)
     else:
-        metadata_file = Path(__file__).parent.parent / 'metadata.jsonl'
+        # 尝试从当前目录或上级目录查找
+        metadata_file = Path('metadata.jsonl')
+        if not metadata_file.exists():
+            metadata_file = Path(__file__).parent.parent / 'metadata.jsonl'
 
     if not metadata_file.exists():
         logger.error(f"metadata.jsonl 不存在: {metadata_file}")
@@ -249,12 +246,14 @@ def main():
     # 并行处理
     success_count = 0
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
-        futures = [executor.submit(process_single_item, item, data_root, releases_root) for item in metadata_list]
+        futures = [executor.submit(process_single_item, item, data_root, releases_root, args.only_changed) for item in metadata_list]
+        
         for future in as_completed(futures):
             if future.result():
                 success_count += 1
 
     logger.info(f"完成！成功: {success_count}/{len(metadata_list)}")
+    logger.info(f"成品目录: {releases_root}")
 
 
 if __name__ == "__main__":
