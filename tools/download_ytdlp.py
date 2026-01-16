@@ -113,24 +113,24 @@ def parse_lrc_lyrics(lrc_data):
     """解析LRC格式歌词，保留时间戳"""
     if not lrc_data:
         return None
-    
+
     lines = lrc_data.split('\n')
     lyrics_lines = []
-    
+
     for line in lines:
         line = line.strip()
         if not line:
             continue
-        
+
         # 保留时间戳 [00:00.00]
         # 只移除空行和纯时间戳行
         import re
         # 检查是否是纯时间戳行（只有时间戳没有内容）
         if re.match(r'^\[\d{2}:\d{2}\.\d{2}\]\s*$', line):
             continue
-        
+
         lyrics_lines.append(line)
-    
+
     return '\n'.join(lyrics_lines) if lyrics_lines else None
 
 
@@ -138,64 +138,77 @@ def download_cover(url, cache_root):
     """下载封面图片并保存到cache"""
     if not url:
         return None
-    
+
     try:
         # 下载图片
         cmd = ['curl', '-s', url]
         result = subprocess.run(cmd, capture_output=True, check=True)
         cover_data = result.stdout
-        
+
         if not cover_data or len(cover_data) < 100:
             return None
-        
+
         # 计算哈希
         cover_hash = hashlib.sha256(cover_data).hexdigest()
         cover_oid = f"sha256:{cover_hash}"
-        
+
         # 保存到cache
         hash_hex = cover_hash
         subdir = hash_hex[:2]
         target_dir = cache_root / 'covers' / 'sha256' / subdir
         target_dir.mkdir(parents=True, exist_ok=True)
         target_path = target_dir / f"{hash_hex}.jpg"
-        
+
         if not target_path.exists():
             with open(target_path, 'wb') as f:
                 f.write(cover_data)
             logger.info(f"下载封面: {cover_oid[:16]}...")
-        
+
         return cover_oid
     except Exception as e:
         logger.error(f"下载封面失败: {e}")
         return None
 
 
-def download_audio(url, cache_root, audio_oid):
-    """下载音频文件并保存到cache"""
-    if not url or not audio_oid:
+def download_audio_with_ytdlp(url, cache_root):
+    """使用 yt-dlp 下载音频文件并保存到cache（带进度）"""
+    if not url:
         return None
-    
+
     try:
-        # 下载音频
-        cmd = ['curl', '-s', url]
-        result = subprocess.run(cmd, capture_output=True, check=True)
-        audio_data = result.stdout
-        
-        if not audio_data or len(audio_data) < 1000:
+        # 临时下载到work目录
+        work_dir = cache_root.parent / 'work'
+        work_dir.mkdir(parents=True, exist_ok=True)
+
+        # 使用 yt-dlp 下载，会显示进度
+        temp_path = work_dir / 'temp_download.mp3'
+        cmd = ['python', '-m', 'yt_dlp', '-o', str(temp_path), url]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, encoding='utf-8')
+
+        # 检查文件是否下载成功
+        if not temp_path.exists() or temp_path.stat().st_size < 1000:
+            logger.error(f"音频下载失败: {temp_path}")
             return None
-        
+
+        # 提取音频流并计算哈希
+        audio_data, audio_hash = extract_audio_stream(temp_path)
+        audio_oid = f"sha256:{audio_hash}"
+
         # 保存到cache
         hash_hex = audio_oid.replace('sha256:', '')
         subdir = hash_hex[:2]
         target_dir = cache_root / 'objects' / 'sha256' / subdir
         target_dir.mkdir(parents=True, exist_ok=True)
         target_path = target_dir / f"{hash_hex}.mp3"
-        
+
         if not target_path.exists():
-            with open(target_path, 'wb') as f:
-                f.write(audio_data)
-            logger.info(f"下载音频: {audio_oid[:16]}...")
-        
+            # 移动文件到cache
+            shutil.move(str(temp_path), str(target_path))
+            logger.info(f"保存音频: {audio_oid[:16]}...")
+        else:
+            # 文件已存在，删除临时文件
+            temp_path.unlink(missing_ok=True)
+
         return audio_oid
     except Exception as e:
         logger.error(f"下载音频失败: {e}")
@@ -235,72 +248,42 @@ def process_url(url, cache_root, metadata_file):
     """处理单个URL"""
     try:
         logger.info(f"获取音乐信息: {url}")
-        
+
         # 使用 yt-dlp 获取信息
         cmd = ['python', '-m', 'yt_dlp', '-j', url]
         result = subprocess.run(cmd, capture_output=True, text=True, check=True, encoding='utf-8')
-        
+
         # 解析JSON
         info = json.loads(result.stdout)
-        
+
         # 提取基本信息
         title = info.get('title', '未知')
         artists = info.get('creators', [])
         album = info.get('album', '')
         duration = info.get('duration', 0)
-        
+
         # 提取歌词
         lyrics_lrc = None
         if 'subtitles' in info and 'lyrics' in info['subtitles']:
             lyrics_data = info['subtitles']['lyrics'][0].get('data', '')
             lyrics_lrc = parse_lrc_lyrics(lyrics_data)
-        
+
         # 提取封面URL
         cover_url = info.get('thumbnail')
-        
-        # 选择最高质量的音频格式（exhigh: 320kbps）
-        audio_url = None
-        for fmt in info.get('formats', []):
-            if fmt.get('format_id') == 'exhigh':
-                audio_url = fmt.get('url')
-                break
-        
-        if not audio_url:
-            # 如果没有exhigh，选择第一个音频格式
-            for fmt in info.get('formats', []):
-                if fmt.get('vcodec') == 'none':
-                    audio_url = fmt.get('url')
-                    break
-        
-        if not audio_url:
-            logger.error("未找到可用的音频格式")
-            return False
-        
+
         # 下载封面
         cover_oid = None
         if cover_url:
             cover_oid = download_cover(cover_url, cache_root)
-        
-        # 下载音频并计算哈希
+
+        # 下载音频（使用 yt-dlp，会显示进度）
         logger.info("下载音频文件...")
-        temp_audio = tempfile.NamedTemporaryFile(suffix='.mp3', delete=False)
-        temp_audio_path = Path(temp_audio.name)
-        temp_audio.close()
-        
-        # 下载音频到临时文件
-        cmd = ['curl', '-s', '-o', str(temp_audio_path), audio_url]
-        subprocess.run(cmd, check=True)
-        
-        # 提取音频流并计算哈希
-        audio_data, audio_hash = extract_audio_stream(temp_audio_path)
-        audio_oid = f"sha256:{audio_hash}"
-        
-        # 保存音频到cache
-        download_audio(audio_url, cache_root, audio_oid)
-        
-        # 清理临时文件
-        temp_audio_path.unlink(missing_ok=True)
-        
+        audio_oid = download_audio_with_ytdlp(url, cache_root)
+
+        if not audio_oid:
+            logger.error("音频下载失败")
+            return False
+
         # 检查是否已存在
         metadata_list = load_metadata(metadata_file)
         existing = None
@@ -308,9 +291,11 @@ def process_url(url, cache_root, metadata_file):
             if item.get('audio_oid') == audio_oid:
                 existing = item
                 break
-        
-        now = datetime.now().isoformat() + 'Z'
-        
+
+        # 使用UTC时间
+        from datetime import timezone
+        now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+
         if existing:
             # 更新现有条目
             existing['title'] = title
@@ -323,8 +308,7 @@ def process_url(url, cache_root, metadata_file):
                 existing['uslt'] = lyrics_lrc
             if cover_oid:
                 existing['cover_oid'] = cover_oid
-            existing['updated_at'] = now
-            
+
             logger.info(f"更新元数据: {title}")
         else:
             # 新增条目
@@ -332,10 +316,9 @@ def process_url(url, cache_root, metadata_file):
                 'audio_oid': audio_oid,
                 'title': title,
                 'artists': artists,
-                'created_at': now,
-                'updated_at': now
+                'created_at': now
             }
-            
+
             if album:
                 new_item['album'] = album
             if duration:
@@ -344,15 +327,15 @@ def process_url(url, cache_root, metadata_file):
                 new_item['uslt'] = lyrics_lrc
             if cover_oid:
                 new_item['cover_oid'] = cover_oid
-            
+
             metadata_list.append(new_item)
             logger.info(f"新增元数据: {title}")
-        
+
         # 保存metadata
         save_metadata(metadata_file, metadata_list)
-        
+
         return True
-        
+
     except Exception as e:
         logger.error(f"处理失败: {e}")
         return False
