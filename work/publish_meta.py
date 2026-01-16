@@ -248,6 +248,7 @@ def save_metadata(metadata_file, metadata_list):
 def process_file(audio_file, rel_path, metadata_index, metadata_list, cache_root):
     """处理单个文件：计算哈希，更新或新增条目"""
     try:
+        from datetime import timezone
         # 提取音频流和哈希
         audio_data, audio_hash = extract_audio_stream(audio_file)
         audio_oid = f"sha256:{audio_hash}"
@@ -262,35 +263,36 @@ def process_file(audio_file, rel_path, metadata_index, metadata_list, cache_root
         # 查找是否已存在 (严格按音频流哈希匹配)
         existing = metadata_index.get(audio_oid)
 
-        # 使用兼容性更好的方式获取 UTC 时间戳
-        now = datetime.now().isoformat() + 'Z'
+        # 使用真正的 UTC 时间戳
+        now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
         result = {
             'filename': audio_file.name,
             'rel_path': str(rel_path),
-            'action': None,  # 'added', 'updated', or 'no_change'
+            'action': None,
             'title': metadata.get('title', '未知'),
             'artists': metadata.get('artists', []),
-            'audio_oid': audio_oid
+            'audio_oid': audio_oid,
+            'changed_fields': []
         }
 
         if existing:
             # 检查是否有实际变更
             has_changes = False
 
-            # 检查封面是否有变化 (只有当提取到新封面且与旧的不同时才更新)
+            # 检查封面
             if new_cover_oid and new_cover_oid != existing.get('cover_oid'):
                 has_changes = True
+                result['changed_fields'].append('cover')
 
-            # 检查其他字段是否有变化
-            if not has_changes:
-                for field in ['title', 'artists', 'album', 'date', 'uslt']:
-                    new_val = metadata.get(field)
-                    old_val = existing.get(field)
-                    # 只有当新值存在且不同，或者旧值存在但新值变为空时才算变化
-                    if new_val is not None and new_val != old_val:
-                        has_changes = True
-                        break
+            # 检查其他字段
+            for field in ['title', 'artists', 'album', 'date', 'uslt']:
+                new_val = metadata.get(field)
+                old_val = existing.get(field)
+                if new_val is not None and new_val != old_val:
+                    has_changes = True
+                    result['changed_fields'].append(field)
+                    break
 
             if not has_changes:
                 result['action'] = 'no_change'
@@ -300,7 +302,6 @@ def process_file(audio_file, rel_path, metadata_index, metadata_list, cache_root
             result['action'] = 'updated'
             existing['audio_oid'] = audio_oid
 
-            # 更新字段
             for field in ['title', 'artists', 'album', 'date', 'uslt']:
                 value = metadata.get(field)
                 if value:
@@ -308,11 +309,9 @@ def process_file(audio_file, rel_path, metadata_index, metadata_list, cache_root
                 elif field in existing:
                     del existing[field]
 
-            # 确保关键字段不丢失
             if not existing.get('title'): existing['title'] = '未知'
             if not existing.get('artists'): existing['artists'] = []
 
-            # 处理封面：只有提取到新封面才更新，没提取到则保留原样
             if new_cover_oid:
                 existing['cover_oid'] = new_cover_oid
                 if cover_data:
@@ -434,17 +433,13 @@ def main():
     # 创建进度条（固定描述，不随文件变化）
     progress_mgr.set_progress(0, total_files, "处理中")
 
-    # 使用线程池并行处理 ffmpeg 任务
+    # 使用线程池并行处理
     max_workers = min(os.cpu_count() or 4, 8)
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_file = {
             executor.submit(
-                process_file,
-                f,
-                f.relative_to(work_dir),
-                metadata_index,
-                metadata_list,
-                cache_root
+                process_file, f, f.relative_to(work_dir),
+                metadata_index, metadata_list, cache_root
             ): f for f in audio_files
         }
 
@@ -454,27 +449,26 @@ def main():
             result = future.result()
             if result:
                 processed_results.append(result)
-                # 只有真正变动了才打印日志
-                if result['action'] == 'added':
-                    logger.info(f"新增: {result['rel_path']}")
-                elif result['action'] == 'updated':
-                    logger.info(f"更新: {result['rel_path']}")
             else:
                 logger.error(f"✗ 失败: {future_to_file[future].name}")
-
             progress_mgr.set_progress(completed, total_files, "处理中")
 
-    # 显式关闭处理进度条
     progress_mgr.close()
 
     if not processed_results:
         logger.error("没有文件被成功处理")
         return
 
-    # 统计实际变动
-    added_count = len([r for r in processed_results if r['action'] == 'added'])
-    updated_count = len([r for r in processed_results if r['action'] == 'updated'])
-    total_changed = added_count + updated_count
+    # 统计变动
+    added_list = [r for r in processed_results if r['action'] == 'added']
+    updated_list = [r for r in processed_results if r['action'] == 'updated']
+
+    field_stats = {}
+    for r in updated_list:
+        for field in r['changed_fields']:
+            field_stats[field] = field_stats.get(field, 0) + 1
+
+    total_changed = len(added_list) + len(updated_list)
 
     # 只有在有变动时才保存
     if total_changed > 0:
@@ -483,12 +477,33 @@ def main():
     else:
         logger.info("没有元数据变更，跳过保存。")
 
-    logger.info(f"处理成功: {len(processed_results)}/{len(audio_files)} 个文件")
-    logger.info(f"  新增: {added_count} 个")
-    logger.info(f"  更新: {updated_count} 个")
+    # 总结输出
+    print("\n" + "="*40)
+    print(f"处理完成统计:")
+    print(f"  总文件数: {len(audio_files)}")
+    print(f"  新增条目: {len(added_list)}")
+    print(f"  更新条目: {len(updated_list)}")
 
-    # 删除 work 中的文件 (只要处理成功了就删除，无论是否有元数据变更)
-    logger.info("删除已处理的work文件...")
+    if updated_list and field_stats:
+        print("  字段更新占比:")
+        for field, count in field_stats.items():
+            pct = (count / len(updated_list)) * 100
+            print(f"    - {field}: {pct:.1f}% ({count}次)")
+
+    # 智能列表输出
+    if len(added_list) > 0 or len(updated_list) > 0:
+        print("-" * 40)
+        if len(added_list) > 0 and (len(added_list) <= len(updated_list) or len(updated_list) == 0):
+            print(f"新增列表 ({len(added_list)}个):")
+            for r in added_list:
+                print(f"  + {', '.join(r['artists'])} - {r['title']}")
+        elif len(updated_list) > 0:
+            print(f"更新列表 ({len(updated_list)}个):")
+            for r in updated_list:
+                print(f"  ~ {', '.join(r['artists'])} - {r['title']}")
+    print("="*40 + "\n")
+
+    # 删除 work 中的文件
     to_delete = [r for r in processed_results if r['action'] is not None]
     total_del = len(to_delete)
     if total_del > 0:

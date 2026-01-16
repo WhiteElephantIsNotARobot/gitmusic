@@ -36,8 +36,8 @@ except ImportError:
 
 def get_metadata_hash(item):
     """计算元数据条目的哈希值，用于增量对比"""
-    # 排除掉时间戳字段，只针对内容哈希
-    content = {k: v for k, v in item.items() if k not in ['created_at', 'updated_at']}
+    # 排除掉 updated_at 字段（如果存在），created_at 必须包含在内以检测数据库重建
+    content = {k: v for k, v in item.items() if k not in ['updated_at']}
     s = json.dumps(content, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(s.encode('utf-8')).hexdigest()
 
@@ -76,31 +76,31 @@ def embed_metadata(audio_path, metadata, cover_path=None):
         artists = metadata.get('artists', [])
         if artists:
             audio.tags.add(TPE1(encoding=3, text=artists if isinstance(artists, list) else [artists]))
-        
+
         title = metadata.get('title', '未知')
         audio.tags.add(TIT2(encoding=3, text=title))
-        
+
         album = metadata.get('album') or title
         audio.tags.add(TALB(encoding=3, text=album))
-        
+
         date = metadata.get('date')
         if date:
             audio.tags.add(TDRC(encoding=3, text=date))
-            
+
         uslt = metadata.get('uslt')
         if uslt:
             audio.tags.add(USLT(encoding=3, lang='eng', desc='', text=uslt))
-            
+
         # 封面嵌入 (关键修复：确保 server 模式也能正确找到封面)
         if cover_path and cover_path.exists():
             with open(cover_path, 'rb') as f:
                 cover_data = f.read()
             audio.tags.add(APIC(encoding=3, mime='image/jpeg', type=3, desc='Cover', data=cover_data))
-        
+
         # 嵌入元数据哈希用于增量对比
         meta_hash = get_metadata_hash(metadata)
         audio.tags.add(TXXX(encoding=3, desc='METADATA_HASH', text=[meta_hash]))
-        
+
         audio.save()
         with open(tmp_file, 'rb') as f:
             return f.read()
@@ -221,7 +221,7 @@ def main():
 
     logger.info(f"开始生成 {len(to_generate)} 个条目 (模式: {args.mode})...")
     success = 0
-    
+
     if args.mode == 'local' and tqdm:
         pbar = tqdm(total=len(to_generate), desc="生成中")
         for item in to_generate:
