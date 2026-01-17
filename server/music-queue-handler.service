@@ -1,0 +1,14 @@
+[Unit]
+Description=Music Queue Handler Service
+After=network.target
+
+[Service]
+Type=simple
+User=white_elephant
+WorkingDirectory=/srv/music/repo
+ExecStart=/usr/bin/python3 /srv/music/repo/server/queue_handler.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
