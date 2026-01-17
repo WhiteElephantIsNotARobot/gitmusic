@@ -321,31 +321,17 @@ def process_file(audio_file, rel_path, metadata_index, metadata_list, cache_root
             result['action'] = 'added'
             new_item = {
                 'audio_oid': audio_oid,
+                'cover_oid': new_cover_oid if new_cover_oid else None,
+                'title': metadata.get('title', '未知'),
+                'artists': metadata.get('artists', []),
+                'album': metadata.get('album'),
+                'date': metadata.get('date'),
+                'uslt': metadata.get('uslt'),
                 'created_at': now
             }
 
-            # 只添加非空字段
-            if metadata.get('title'):
-                new_item['title'] = metadata['title']
-            else:
-                new_item['title'] = '未知'
-
-            if metadata.get('artists'):
-                new_item['artists'] = metadata['artists']
-            else:
-                new_item['artists'] = []
-
-            if metadata.get('album'):
-                new_item['album'] = metadata['album']
-
-            if metadata.get('date'):
-                new_item['date'] = metadata['date']
-
-            if metadata.get('uslt'):
-                new_item['uslt'] = metadata['uslt']
-
-            if new_cover_oid:
-                new_item['cover_oid'] = new_cover_oid
+            # 移除None值
+            new_item = {k: v for k, v in new_item.items() if v is not None}
 
             metadata_list.append(new_item)
             metadata_index[audio_oid] = new_item

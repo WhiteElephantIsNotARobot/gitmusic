@@ -168,11 +168,18 @@ def process_url(url, cache_root, metadata_file, max_retries=5):
             if cover_oid: existing['cover_oid'] = cover_oid
             logger.info(f"更新元数据: {title}")
         else:
-            new_item = {'audio_oid': audio_oid, 'title': title, 'artists': artists, 'created_at': now}
-            if album: new_item['album'] = album
-            if date_str: new_item['date'] = date_str
-            if lyrics_lrc: new_item['uslt'] = lyrics_lrc
-            if cover_oid: new_item['cover_oid'] = cover_oid
+            new_item = {
+                'audio_oid': audio_oid,
+                'cover_oid': cover_oid,
+                'title': title,
+                'artists': artists,
+                'album': album,
+                'date': date_str,
+                'uslt': lyrics_lrc,
+                'created_at': now
+            }
+            # 移除None值
+            new_item = {k: v for k, v in new_item.items() if v is not None}
             metadata_list.append(new_item)
             logger.info(f"新增元数据: {title}")
 
