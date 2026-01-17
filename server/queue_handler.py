@@ -31,14 +31,12 @@ CREATE_RELEASE_SCRIPT = '/srv/music/repo/release/create_release.py'
 def process_queue():
     """处理队列中的请求"""
     if not os.path.exists(QUEUE_FILE):
-        logger.info("队列文件不存在，等待新请求...")
         return
 
     with open(QUEUE_FILE, 'r', encoding='utf-8') as f:
         lines = f.readlines()
 
     if not lines:
-        logger.info("队列为空，等待新请求...")
         return
 
     # 清空队列文件
