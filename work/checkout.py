@@ -1,157 +1,64 @@
-#!/usr/bin/env python3
-"""
-检出脚本
-按 audio_oid 或标题从 cache 检出，嵌入标签和封面后保存到 work 目录
-支持批量检出和条件检出（如缺少封面、歌词等）
-"""
-
 import os
 import json
-import subprocess
-import tempfile
-import shutil
-from pathlib import Path
-import logging
 import sys
-import threading
-from io import StringIO
+from pathlib import Path
 
-# 尝试导入 tqdm
-try:
-    from tqdm import tqdm
-except ImportError:
-    print("错误: tqdm 库未安装，请运行 pip install tqdm", file=sys.stderr)
-    exit(1)
+# 导入核心库
+sys.path.append(str(Path(__file__).parent.parent))
+from libgitmusic.events import EventEmitter
+from libgitmusic.audio import AudioIO
+from libgitmusic.metadata import MetadataManager
 
+def main():
+    # 解析命令行参数 (简化版，实际会更复杂)
+    query = sys.argv[1] if len(sys.argv) > 1 else ""
 
-class BottomProgressBar:
-    """底部固定进度条管理器（支持日志平滑滚动）"""
-    def __init__(self):
-        self.progress_bar = None
-        self.lock = threading.Lock()
+    repo_root = Path(__file__).parent.parent
+    metadata_mgr = MetadataManager(repo_root / "metadata.jsonl")
+    work_dir = repo_root.parent / "work"
+    cache_root = repo_root.parent / "cache"
 
-    def set_progress(self, current, total, desc=""):
-        """设置进度"""
-        with self.lock:
-            if self.progress_bar is None:
-                self.progress_bar = tqdm(total=total, desc=desc, unit="file",
-                                       bar_format='{desc} {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]',
-                                       file=sys.stdout, dynamic_ncols=True)
-            else:
-                if self.progress_bar.desc != desc:
-                    self.progress_bar.set_description(desc)
-                self.progress_bar.total = total
-                self.progress_bar.n = current
-                self.progress_bar.refresh()
+    all_entries = metadata_mgr.load_all()
 
-    def write_log(self, message):
-        """通过tqdm安全地打印日志，不破坏进度条"""
-        with self.lock:
-            if self.progress_bar:
-                self.progress_bar.write(message)
-            else:
-                print(message)
+    # 过滤逻辑
+    to_checkout = []
+    for entry in all_entries:
+        if query.lower() in entry.get('title', '').lower() or query in entry.get('audio_oid', ''):
+            to_checkout.append(entry)
 
-    def close(self):
-        """关闭进度条"""
-        with self.lock:
-            if self.progress_bar:
-                self.progress_bar.close()
-                self.progress_bar = None
+    EventEmitter.phase_start("checkout", total_items=len(to_checkout))
 
+    for i, entry in enumerate(to_checkout):
+        raw_filename = f"{'/'.join(entry['artists'])} - {entry['title']}.mp3"
+        filename = AudioIO.sanitize_filename(raw_filename)
+        out_path = work_dir / filename
 
-# 创建全局进度管理器
-progress_mgr = BottomProgressBar()
+        EventEmitter.item_event(filename, "processing")
 
+        # 查找音频和封面
+        audio_hash = entry['audio_oid'].split(":")[1]
+        src_audio = cache_root / "objects" / "sha256" / audio_hash[:2] / f"{audio_hash}.mp3"
 
-class TqdmLogHandler(logging.Handler):
-    """将日志重定向到tqdm.write的处理器"""
-    def emit(self, record):
-        try:
-            msg = self.format(record)
-            progress_mgr.write_log(msg)
-        except Exception:
-            self.handleError(record)
+        cover_data = None
+        if entry.get('cover_oid'):
+            cover_hash = entry['cover_oid'].split(":")[1]
+            cover_path = cache_root / "covers" / "sha256" / cover_hash[:2] / f"{cover_hash}.jpg"
+            if cover_path.exists():
+                with open(cover_path, 'rb') as f:
+                    cover_data = f.read()
 
+        if src_audio.exists():
+            AudioIO.embed_metadata(src_audio, entry, cover_data, out_path)
+            EventEmitter.item_event(filename, "success")
+        else:
+            EventEmitter.error(f"Source missing for {entry['audio_oid']}")
 
-# 配置日志
-handler = TqdmLogHandler()
-handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
-logging.basicConfig(level=logging.INFO, handlers=[handler])
-logger = logging.getLogger(__name__)
+        EventEmitter.batch_progress("checkout", i + 1, len(to_checkout))
 
+    EventEmitter.result("ok", message=f"Checked out {len(to_checkout)} files")
 
-def find_in_cache(oid, cache_root, data_type):
-    """在 cache 中查找对象"""
-    if not oid or not oid.startswith('sha256:'):
-        return None
-
-    hash_hex = oid[7:]
-    subdir = hash_hex[:2]
-
-    if data_type == 'audio':
-        path = cache_root / 'objects' / 'sha256' / subdir / f"{hash_hex}.mp3"
-    else:
-        path = cache_root / 'covers' / 'sha256' / subdir / f"{hash_hex}.jpg"
-
-    return path if path.exists() else None
-
-
-def embed_tags(audio_path, cover_path, metadata, output_path):
-    """嵌入标签和封面到音频文件"""
-    try:
-        # 先复制音频文件
-        shutil.copy2(audio_path, output_path)
-
-        # 使用 mutagen 嵌入标签
-        from mutagen.mp3 import MP3
-        from mutagen.id3 import ID3, TPE1, TIT2, TALB, TDRC, USLT, APIC
-
-        audio = MP3(output_path)
-
-        # 确保有 ID3 标签
-        if audio.tags is None:
-            audio.add_tags()
-
-        # 清除现有标签
-        audio.delete()
-
-        # 添加标签
-        title = metadata.get('title', '').replace('\x00', '').strip()
-        artists = [str(a).replace('\x00', '').strip() for a in metadata.get('artists', []) if a]
-        album = metadata.get('album', '').replace('\x00', '').strip()
-        date = str(metadata.get('date', '')).replace('\x00', '').strip()
-        uslt = metadata.get('uslt', '').replace('\x00', '').strip()
-
-        if title:
-            audio.tags.add(TIT2(encoding=3, text=title))
-        if artists:
-            audio.tags.add(TPE1(encoding=3, text=artists))
-        if album:
-            audio.tags.add(TALB(encoding=3, text=album))
-        if date:
-            audio.tags.add(TDRC(encoding=3, text=date))
-        if uslt:
-            audio.tags.add(USLT(encoding=3, lang='eng', desc='', text=uslt))
-
-        # 添加封面
-        if cover_path and cover_path.exists():
-            with open(cover_path, 'rb') as f:
-                cover_data = f.read()
-            audio.tags.add(APIC(
-                encoding=3,
-                mime='image/jpeg',
-                type=3,
-                desc='Cover',
-                data=cover_data
-            ))
-
-        audio.save()
-        return True
-    except Exception as e:
-        logger.error(f"嵌入标签失败: {e}")
-        if output_path.exists():
-            output_path.unlink()
+if __name__ == "__main__":
+    main()
 def get_work_filename(metadata):
     """生成工作目录文件名：艺术家 - 标题.mp3"""
     artists = metadata.get('artists', [])

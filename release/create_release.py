@@ -1,37 +1,63 @@
-#!/usr/bin/env python3
-"""
-成品生成脚本 (统一版)
-支持 Local 和 Server 两种模式，确保元数据和封面嵌入逻辑完全一致。
-"""
-
 import os
 import json
-import hashlib
-import shutil
-import tempfile
-import subprocess
-import logging
-import threading
+import sys
 from pathlib import Path
-from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# 配置日志
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
-logger = logging.getLogger(__name__)
+# 导入核心库
+sys.path.append(str(Path(__file__).parent.parent))
+from libgitmusic.events import EventEmitter
+from libgitmusic.audio import AudioIO
+from libgitmusic.metadata import MetadataManager
 
-# 尝试导入 mutagen 和 tqdm
-try:
-    from mutagen.id3 import ID3, TPE1, TIT2, TALB, TDRC, USLT, APIC, TXXX
-    from mutagen.mp3 import MP3
-except ImportError:
-    logger.error("错误: mutagen 库未安装")
-    exit(1)
+def main():
+    # 解析参数
+    mode = "local"
+    for arg in sys.argv:
+        if arg.startswith("--mode="):
+            mode = arg.split("=")[1]
 
-try:
-    from tqdm import tqdm
-except ImportError:
-    tqdm = None
+    repo_root = Path(__file__).parent.parent
+    metadata_mgr = MetadataManager(repo_root / "metadata.jsonl")
+
+    if mode == "local":
+        release_dir = repo_root.parent / "release"
+        cache_root = repo_root.parent / "cache"
+    else:
+        release_dir = Path("/srv/music/data/release")
+        cache_root = Path("/srv/music/data")
+
+    all_entries = metadata_mgr.load_all()
+    EventEmitter.phase_start("release", total_items=len(all_entries))
+
+    for i, entry in enumerate(all_entries):
+        filename = AudioIO.sanitize_filename(f"{'/'.join(entry['artists'])} - {entry['title']}.mp3")
+        out_path = release_dir / filename
+
+        EventEmitter.item_event(filename, "generating")
+
+        audio_hash = entry['audio_oid'].split(":")[1]
+        src_audio = cache_root / "objects" / "sha256" / audio_hash[:2] / f"{audio_hash}.mp3"
+
+        cover_data = None
+        if entry.get('cover_oid'):
+            cover_hash = entry['cover_oid'].split(":")[1]
+            cover_path = cache_root / "covers" / "sha256" / cover_hash[:2] / f"{cover_hash}.jpg"
+            if cover_path.exists():
+                with open(cover_path, 'rb') as f:
+                    cover_data = f.read()
+
+        if src_audio.exists():
+            AudioIO.embed_metadata(src_audio, entry, cover_data, out_path)
+            EventEmitter.item_event(filename, "success")
+        else:
+            EventEmitter.error(f"Source missing for {entry['audio_oid']}")
+
+        EventEmitter.batch_progress("release", i + 1, len(all_entries))
+
+    EventEmitter.result("ok", message="Release generation completed")
+
+if __name__ == "__main__":
+    main()
 
 
 def get_metadata_hash(item):

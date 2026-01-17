@@ -1,138 +1,58 @@
 import os
+import sys
 import json
-import hashlib
 import subprocess
-import shutil
 import tempfile
 from pathlib import Path
-from datetime import datetime, timezone
-import logging
-import sys
 
-# 尝试导入 mutagen
-try:
-    from mutagen import File
-    from mutagen.id3 import ID3, APIC
-except ImportError:
-    print("错误: mutagen 库未安装", file=sys.stderr)
-    exit(1)
+# 导入核心库
+sys.path.append(str(Path(__file__).parent.parent))
+from libgitmusic.events import EventEmitter
+from libgitmusic.audio import AudioIO
 
-# 配置日志
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-# FFmpeg 版本和参数配置
-FFMPEG_VERSION = "6.1.1"  # 固定版本
-FFMPEG_EXTRACT_AUDIO_CMD = [
-    'ffmpeg', '-i', '{input}', '-map', '0:a:0',
-    '-c', 'copy', '-f', 'mp3',
-    '-map_metadata', '-1',
-    '-id3v2_version', '0',
-    '-write_id3v1', '0',
-    'pipe:1'
-]
-
-# 记录 FFmpeg 版本
-try:
-    result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True)
-    ffmpeg_version_output = result.stdout.split('\n')[0] if result.stdout else "Unknown"
-    logger.info(f"FFmpeg 版本: {ffmpeg_version_output}")
-    logger.info(f"配置的 FFmpeg 版本: {FFMPEG_VERSION}")
-except Exception as e:
-    logger.warning(f"无法获取 FFmpeg 版本: {e}")
-
-
-def extract_audio_stream(audio_path):
-    """提取纯净音频流并计算哈希（完全移除ID3标签）"""
-    try:
-        cmd = [arg.format(input=str(audio_path)) for arg in FFMPEG_EXTRACT_AUDIO_CMD]
-        result = subprocess.run(cmd, capture_output=True, check=True)
-        audio_data = result.stdout
-        audio_hash = hashlib.sha256(audio_data).hexdigest()
-        return audio_data, audio_hash
-    except subprocess.CalledProcessError as e:
-        logger.error(f"提取音频流失败 {audio_path}: {e}")
-        raise
-
-
-def parse_lrc_lyrics(lrc_data):
-    """解析LRC格式歌词，保留时间戳"""
-    if not lrc_data:
-        return None
-
-    lines = lrc_data.split('\n')
-    lyrics_lines = []
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        import re
-        if re.match(r'^\[\d{2}:\d{2}\.\d{2}\]\s*$', line):
-            continue
-        lyrics_lines.append(line)
-    return '\n'.join(lyrics_lines) if lyrics_lines else None
-
-
-def download_cover(url, cache_root):
-    """下载封面图片并保存到cache"""
-    if not url:
-        return None
-    try:
-        cmd = ['curl', '-s', url]
-        result = subprocess.run(cmd, capture_output=True, check=True)
-        cover_data = result.stdout
-        if not cover_data or len(cover_data) < 100:
-            return None
-        cover_hash = hashlib.sha256(cover_data).hexdigest()
-        cover_oid = f"sha256:{cover_hash}"
-
-        target_path = cache_root / 'covers' / 'sha256' / cover_hash[:2] / f"{cover_hash}.jpg"
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-
-        if not target_path.exists():
-            with open(target_path, 'wb') as f:
-                f.write(cover_data)
-            logger.info(f"下载封面: {cover_oid[:16]}...")
-        return cover_oid
-    except Exception as e:
-        logger.error(f"下载封面失败: {e}")
-        return None
-
-
-def download_audio_with_ytdlp(url, cache_root, max_retries=5):
-    """使用 yt-dlp 下载音频文件（直接显示进度）"""
-    work_dir = cache_root.parent / 'work'
-    work_dir.mkdir(parents=True, exist_ok=True)
-    temp_path = work_dir / 'temp_download.mp3'
-
-    for attempt in range(max_retries):
-        try:
-            temp_path.unlink(missing_ok=True)
-            # 不捕获输出，直接让 yt-dlp 打印到终端
-            cmd = ['python', '-m', 'yt_dlp', '-o', str(temp_path), url]
-            subprocess.run(cmd, check=True)
-
-            if not temp_path.exists() or temp_path.stat().st_size < 1000:
-                continue
-
-            audio_data, audio_hash = extract_audio_stream(temp_path)
-            audio_oid = f"sha256:{audio_hash}"
-
-            target_path = cache_root / 'objects' / 'sha256' / audio_hash[:2] / f"{audio_hash}.mp3"
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-
-            if not target_path.exists():
-                shutil.move(str(temp_path), str(target_path))
-                logger.info(f"保存音频: {audio_oid[:16]}...")
-            else:
-                temp_path.unlink(missing_ok=True)
-            return audio_oid
-        except Exception as e:
-            if attempt == max_retries - 1:
-                logger.error(f"下载音频失败: {e}")
-                return None
-            logger.warning(f"重试中... ({attempt+1}/{max_retries})")
+def fetch_metadata(url):
+    cmd = ["yt-dlp", "--dump-json", "--skip-download", url]
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8')
+    if result.returncode == 0:
+        info = json.loads(result.stdout)
+        return {
+            "title": info.get("title"),
+            "artists": info.get("creators") or [info.get("uploader")],
+            "duration": info.get("duration"),
+            "bitrate": info.get("abr"),
+            "url": url
+        }
     return None
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('url', nargs='?')
+    parser.add_argument('--batch-file', help="包含 URL 的文件路径")
+    parser.add_argument('--fetch', action='store_true', help="仅获取元数据")
+    parser.add_argument('--no-preview', action='store_true')
+    args = parser.parse_args()
+
+    urls = []
+    if args.batch_file:
+        with open(args.batch_file, 'r') as f:
+            urls = [line.strip() for line in f if line.strip().startswith("http")]
+    elif args.url:
+        urls = [args.url]
+
+    if not urls:
+        EventEmitter.error("No URLs provided")
+        return
+
+    EventEmitter.phase_start("fetch", total_items=len(urls))
+    results = []
+    for url in urls:
+        meta = fetch_metadata(url)
+        if meta:
+            results.append(meta)
+            EventEmitter.item_event(url, "fetched", message=f"{meta['title']} ({meta['duration']}s)")
+
+    EventEmitter.result("ok", message="Fetch completed", artifacts={"metadata_list": results})
 
 
 def process_url(url, cache_root, metadata_file, max_retries=5):
