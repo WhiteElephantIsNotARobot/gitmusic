@@ -50,6 +50,59 @@ def sanitize_filename(filename):
     return filename.strip()
 
 
+def handle_filename_conflict(dest_path, conflict_strategy='suffix'):
+    """
+    处理文件名冲突
+
+    Args:
+        dest_path: 目标文件路径
+        conflict_strategy: 冲突处理策略 ('overwrite', 'suffix', 'prompt')
+
+    Returns:
+        处理后的文件路径
+    """
+    if not dest_path.exists():
+        return dest_path
+
+    if conflict_strategy == 'overwrite':
+        logger.warning(f"文件名冲突，将覆盖现有文件: {dest_path}")
+        return dest_path
+
+    elif conflict_strategy == 'suffix':
+        # 添加后缀避免冲突
+        counter = 1
+        while True:
+            new_path = dest_path.with_suffix(f".{counter}{dest_path.suffix}")
+            if not new_path.exists():
+                logger.warning(f"文件名冲突，使用新文件名: {new_path}")
+                return new_path
+            counter += 1
+
+    elif conflict_strategy == 'prompt':
+        # 提示用户选择
+        logger.error(f"文件名冲突: {dest_path}")
+        logger.error("请选择操作: [O]覆盖, [S]添加后缀, [C]取消")
+        while True:
+            choice = input().strip().lower()
+            if choice == 'o':
+                return dest_path
+            elif choice == 's':
+                counter = 1
+                while True:
+                    new_path = dest_path.with_suffix(f".{counter}{dest_path.suffix}")
+                    if not new_path.exists():
+                        logger.warning(f"使用新文件名: {new_path}")
+                        return new_path
+                    counter += 1
+            elif choice == 'c':
+                raise ValueError(f"用户取消了文件名冲突处理: {dest_path}")
+            else:
+                logger.error("无效选择，请重新输入 [O/S/C]")
+
+    else:
+        raise ValueError(f"未知的冲突策略: {conflict_strategy}")
+
+
 def get_work_filename(metadata):
     """生成文件名：艺术家 - 标题.mp3"""
     artists = metadata.get('artists', [])
@@ -109,7 +162,7 @@ def embed_metadata(audio_path, metadata, cover_path=None):
             tmp_file.unlink()
 
 
-def process_single_item(item, data_root, releases_root):
+def process_single_item(item, data_root, releases_root, conflict_strategy='suffix'):
     """处理单个条目"""
     try:
         audio_oid = item.get('audio_oid')
@@ -124,6 +177,10 @@ def process_single_item(item, data_root, releases_root):
         audio_path = data_root / 'objects' / 'sha256' / hash_hex[:2] / f"{hash_hex}.mp3"
         if not audio_path.exists():
             logger.error(f"跳过生成 (音频缺失): {title} [{audio_oid[:16]}]")
+            # 写入临时日志
+            log_file = releases_root / 'temp_error.log'
+            with open(log_file, 'a', encoding='utf-8') as f:
+                f.write(f"[{datetime.now()}] 跳过生成 (音频缺失): {title} [{audio_oid[:16]}]\n")
             return False
 
         # 查找封面
@@ -134,7 +191,14 @@ def process_single_item(item, data_root, releases_root):
             cover_path = data_root / 'covers' / 'sha256' / c_hash[:2] / f"{c_hash}.jpg"
             if not cover_path.exists():
                 logger.error(f"跳过生成 (封面缺失): {title} [{cover_oid[:16]}]")
+                # 写入临时日志
+                log_file = releases_root / 'temp_error.log'
+                with open(log_file, 'a', encoding='utf-8') as f:
+                    f.write(f"[{datetime.now()}] 跳过生成 (封面缺失): {title} [{cover_oid[:16]}]\n")
                 return False
+
+        # 处理文件名冲突
+        dest_path = handle_filename_conflict(dest_path, conflict_strategy)
 
         data = embed_metadata(audio_path, item, cover_path)
 
@@ -154,6 +218,10 @@ def process_single_item(item, data_root, releases_root):
         return True
     except Exception as e:
         logger.error(f"处理失败 {item.get('title', '未知')}: {e}")
+        # 写入临时日志
+        log_file = releases_root / 'temp_error.log'
+        with open(log_file, 'a', encoding='utf-8') as f:
+            f.write(f"[{datetime.now()}] 处理失败 {item.get('title', '未知')}: {e}\n")
         return False
 
 
@@ -164,6 +232,7 @@ def main():
     parser.add_argument('--data-root', help="数据根目录 (objects/covers 所在)")
     parser.add_argument('--output', help="成品输出目录")
     parser.add_argument('--workers', type=int, help="并行线程数")
+    parser.add_argument('--conflict-strategy', choices=['overwrite', 'suffix', 'prompt'], default='suffix', help="文件名冲突处理策略")
     args = parser.parse_args()
 
     # 自动推断路径
@@ -230,12 +299,12 @@ def main():
     if args.mode == 'local' and tqdm:
         pbar = tqdm(total=len(to_generate), desc="生成中")
         for item in to_generate:
-            if process_single_item(item, data_root, output_dir): success += 1
+            if process_single_item(item, data_root, output_dir, args.conflict_strategy): success += 1
             pbar.update(1)
         pbar.close()
     else:
         with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = [executor.submit(process_single_item, item, data_root, output_dir) for item in to_generate]
+            futures = [executor.submit(process_single_item, item, data_root, output_dir, args.conflict_strategy) for item in to_generate]
             for future in as_completed(futures):
                 if future.result(): success += 1
 

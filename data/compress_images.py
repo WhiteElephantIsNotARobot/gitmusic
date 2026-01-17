@@ -77,19 +77,30 @@ handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
 logging.basicConfig(level=logging.INFO, handlers=[handler])
 logger = logging.getLogger(__name__)
 
+# FFmpeg 版本和参数配置
+FFMPEG_VERSION = "6.1.1"  # 固定版本
+FFMPEG_COMPRESS_IMAGE_CMD = [
+    'ffmpeg', '-i', '{input}',
+    '-vf', "scale='min(800,iw)':'min(800,ih)':force_original_aspect_ratio=decrease",
+    '-q:v', '2',
+    '-f', 'image2',
+    '-y', '{output}'
+]
+
+# 记录 FFmpeg 版本
+try:
+    result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True)
+    ffmpeg_version_output = result.stdout.split('\n')[0] if result.stdout else "Unknown"
+    logger.info(f"FFmpeg 版本: {ffmpeg_version_output}")
+    logger.info(f"配置的 FFmpeg 版本: {FFMPEG_VERSION}")
+except Exception as e:
+    logger.warning(f"无法获取 FFmpeg 版本: {e}")
+
 
 def compress_to_jpg(input_path, output_path):
     """使用 ffmpeg 将图片压缩为 JPG（平衡画质与体积）"""
     try:
-        # -q:v 2-3: 高质量 (1-31, 1最高)
-        # scale: 限制最大尺寸为 800，但不强制拉伸小图
-        cmd = [
-            'ffmpeg', '-i', str(input_path),
-            '-vf', "scale='min(800,iw)':'min(800,ih)':force_original_aspect_ratio=decrease",
-            '-q:v', '2',
-            '-f', 'image2',
-            '-y', str(output_path)
-        ]
+        cmd = [arg.format(input=str(input_path), output=str(output_path)) for arg in FFMPEG_COMPRESS_IMAGE_CMD]
         subprocess.run(cmd, capture_output=True, check=True)
         return True
     except subprocess.CalledProcessError as e:
@@ -164,20 +175,20 @@ def main():
                     # 压缩后没有变小，删除临时文件，跳过
                     logger.warning(f"压缩后未变小 ({old_size/1024:.1f}KB -> {new_size/1024:.1f}KB)，跳过")
                     temp_path.unlink(missing_ok=True)
-                    progress_mgr.set_progress(processed, total_to_process, "压缩中")
+                    progress_mgr.set_progress(idx, total_to_process, "压缩中")
                     continue
 
                 # 计算新哈希
                 new_hash = calculate_hash(temp_path)
                 if not new_hash:
                     temp_path.unlink(missing_ok=True)
-                    progress_mgr.set_progress(processed, total_to_process, "压缩中")
+                    progress_mgr.set_progress(idx, total_to_process, "压缩中")
                     continue
 
                 # 如果哈希相同，说明已经是优化后的 JPG，跳过
                 if new_hash == old_oid:
                     temp_path.unlink(missing_ok=True)
-                    progress_mgr.set_progress(processed, total_to_process, "压缩中")
+                    progress_mgr.set_progress(idx, total_to_process, "压缩中")
                     continue
 
                 # 移动到新位置

@@ -21,18 +21,31 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# FFmpeg 版本和参数配置
+FFMPEG_VERSION = "6.1.1"  # 固定版本
+FFMPEG_EXTRACT_AUDIO_CMD = [
+    'ffmpeg', '-i', '{input}', '-map', '0:a:0',
+    '-c', 'copy', '-f', 'mp3',
+    '-map_metadata', '-1',
+    '-id3v2_version', '0',
+    '-write_id3v1', '0',
+    'pipe:1'
+]
+
+# 记录 FFmpeg 版本
+try:
+    result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True)
+    ffmpeg_version_output = result.stdout.split('\n')[0] if result.stdout else "Unknown"
+    logger.info(f"FFmpeg 版本: {ffmpeg_version_output}")
+    logger.info(f"配置的 FFmpeg 版本: {FFMPEG_VERSION}")
+except Exception as e:
+    logger.warning(f"无法获取 FFmpeg 版本: {e}")
+
 
 def extract_audio_stream(audio_path):
     """提取纯净音频流并计算哈希（完全移除ID3标签）"""
     try:
-        cmd = [
-            'ffmpeg', '-i', str(audio_path), '-map', '0:a:0',
-            '-c', 'copy', '-f', 'mp3',
-            '-map_metadata', '-1',
-            '-id3v2_version', '0',
-            '-write_id3v1', '0',
-            'pipe:1'
-        ]
+        cmd = [arg.format(input=str(audio_path)) for arg in FFMPEG_EXTRACT_AUDIO_CMD]
         result = subprocess.run(cmd, capture_output=True, check=True)
         audio_data = result.stdout
         audio_hash = hashlib.sha256(audio_data).hexdigest()

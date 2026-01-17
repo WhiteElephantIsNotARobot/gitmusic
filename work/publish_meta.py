@@ -31,6 +31,31 @@ except ImportError:
     print("错误: tqdm 库未安装，请运行 pip install tqdm", file=sys.stderr)
     exit(1)
 
+# FFmpeg 版本和参数配置
+FFMPEG_VERSION = "6.1.1"  # 固定版本
+FFMPEG_EXTRACT_AUDIO_CMD = [
+    'ffmpeg', '-i', '{input}', '-map', '0:a:0',
+    '-c', 'copy', '-f', 'mp3',
+    '-map_metadata', '-1',  # 移除元数据
+    '-id3v2_version', '0',  # 不写入ID3v2标签
+    '-write_id3v1', '0',    # 不写入ID3v1标签
+    'pipe:1'
+]
+FFMPEG_EXTRACT_COVER_CMD = [
+    'ffmpeg', '-i', '{input}', '-map', '0:v',
+    '-map', '-0:V', '-c', 'copy', '-f', 'image2', 'pipe:1'
+]
+
+# 记录 FFmpeg 版本
+logger = logging.getLogger(__name__)
+try:
+    result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True)
+    ffmpeg_version_output = result.stdout.split('\n')[0] if result.stdout else "Unknown"
+    logger.info(f"FFmpeg 版本: {ffmpeg_version_output}")
+    logger.info(f"配置的 FFmpeg 版本: {FFMPEG_VERSION}")
+except Exception as e:
+    logger.warning(f"无法获取 FFmpeg 版本: {e}")
+
 
 class BottomProgressBar:
     """底部固定进度条管理器（支持日志平滑滚动）"""
@@ -92,14 +117,7 @@ logger = logging.getLogger(__name__)
 def extract_audio_stream(audio_path):
     """提取纯净音频流并计算哈希（完全移除ID3标签）"""
     try:
-        cmd = [
-            'ffmpeg', '-i', str(audio_path), '-map', '0:a:0',
-            '-c', 'copy', '-f', 'mp3',
-            '-map_metadata', '-1',  # 移除元数据
-            '-id3v2_version', '0',  # 不写入ID3v2标签
-            '-write_id3v1', '0',    # 不写入ID3v1标签
-            'pipe:1'
-        ]
+        cmd = [arg.format(input=str(audio_path)) for arg in FFMPEG_EXTRACT_AUDIO_CMD]
         result = subprocess.run(cmd, capture_output=True, check=True)
         audio_data = result.stdout
         audio_hash = hashlib.sha256(audio_data).hexdigest()
@@ -113,10 +131,7 @@ def extract_cover(audio_path):
     """提取封面图片并计算哈希 (优先 ffmpeg，备选 mutagen)"""
     # 方案 A: ffmpeg
     try:
-        cmd = [
-            'ffmpeg', '-i', str(audio_path), '-map', '0:v',
-            '-map', '-0:V', '-c', 'copy', '-f', 'image2', 'pipe:1'
-        ]
+        cmd = [arg.format(input=str(audio_path)) for arg in FFMPEG_EXTRACT_COVER_CMD]
         result = subprocess.run(cmd, capture_output=True, check=True)
         if result.stdout and len(result.stdout) > 100: # 确保不是空数据
             cover_data = result.stdout

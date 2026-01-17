@@ -1,0 +1,31 @@
+#!/bin/bash
+# Post-receive hook for music repository
+# This hook writes requests to a queue file instead of directly executing scripts
+
+# 强制使用 Linux 换行符
+LOG_FILE=/srv/music/music.git/hooks/post-receive.log
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+echo "[$(date)] --- Post-receive hook triggered ---"
+
+export HOME=/home/white_elephant
+export PATH=/usr/local/bin:/usr/bin:/bin
+
+unset GIT_DIR
+unset GIT_QUARANTINE_PATH
+
+# 切换到仓库目录
+cd /srv/music/repo || exit 1
+
+# 拉取最新代码
+echo "--- Pulling latest changes ---"
+git fetch origin master
+git reset --hard origin/master
+
+# 将请求写入队列
+QUEUE_FILE=/srv/music/repo/server/queue.jsonl
+echo "{\"timestamp\": \"$(date -Iseconds)\", \"action\": \"generate_releases\"}" >> "$QUEUE_FILE"
+
+echo "--- Request added to queue ---"
+echo "--- Queue handler will process the request ---"
+echo "--- Done ---"
