@@ -21,7 +21,7 @@ class TransportAdapter:
             f"find {remote_path} -type f \\( -name '*.mp3' -o -name '*.jpg' \\) | sed 's|{self.remote_data_root}/||'"
         ]
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='ignore', check=True)
             return [line.strip() for line in result.stdout.splitlines() if line.strip()]
         except subprocess.CalledProcessError:
             return []

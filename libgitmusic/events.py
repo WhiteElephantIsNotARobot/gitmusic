@@ -3,17 +3,19 @@ import json
 import datetime
 import sys
 
+
 class EventEmitter:
     """统一事件输出类，所有脚本通过此类输出 JSONL 事件流"""
+
     @staticmethod
     def emit(event_type, **kwargs):
         event = {
             "type": event_type,
             "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "cmd": Path(sys.argv[0]).stem,
-            **kwargs
+            **kwargs,
         }
-        print(json.dumps(event, ensure_ascii=False), flush=True)
+        print(json.dumps(event, ensure_ascii=True), flush=True)
 
     @staticmethod
     def log(level, message):
@@ -25,7 +27,13 @@ class EventEmitter:
 
     @staticmethod
     def batch_progress(phase, processed, total_items, rate_per_sec=0):
-        EventEmitter.emit("batch_progress", phase=phase, processed=processed, total_items=total_items, rate_per_sec=rate_per_sec)
+        EventEmitter.emit(
+            "batch_progress",
+            phase=phase,
+            processed=processed,
+            total_items=total_items,
+            rate_per_sec=rate_per_sec,
+        )
 
     @staticmethod
     def item_event(item_id, status, message=""):
@@ -33,7 +41,9 @@ class EventEmitter:
 
     @staticmethod
     def result(status, message="", artifacts=None):
-        EventEmitter.emit("result", status=status, message=message, artifacts=artifacts or {})
+        EventEmitter.emit(
+            "result", status=status, message=message, artifacts=artifacts or {}
+        )
 
     @staticmethod
     def error(message, context=None):
