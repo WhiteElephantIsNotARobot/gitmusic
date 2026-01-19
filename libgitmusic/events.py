@@ -3,9 +3,23 @@ import json
 import datetime
 import sys
 
+# 全局事件监听器列表
+_event_listeners = []
+
 
 class EventEmitter:
     """统一事件输出类，所有脚本通过此类输出 JSONL 事件流"""
+
+    @staticmethod
+    def register_listener(listener):
+        """注册事件监听器，listener(event_dict)"""
+        _event_listeners.append(listener)
+
+    @staticmethod
+    def unregister_listener(listener):
+        """注销事件监听器"""
+        if listener in _event_listeners:
+            _event_listeners.remove(listener)
 
     @staticmethod
     def emit(event_type, **kwargs):
@@ -15,7 +29,21 @@ class EventEmitter:
             "cmd": Path(sys.argv[0]).stem,
             **kwargs,
         }
-        print(json.dumps(event, ensure_ascii=True), flush=True)
+        # 调用所有监听器
+        for listener in _event_listeners:
+            try:
+                listener(event)
+            except Exception:
+                pass
+        json_str = json.dumps(event, ensure_ascii=False)
+        try:
+            # 尝试使用UTF-8编码输出，避免控制台编码问题
+            sys.stdout.buffer.write(json_str.encode("utf-8"))
+            sys.stdout.buffer.write(b"\n")
+            sys.stdout.buffer.flush()
+        except:
+            # 如果失败，回退到普通print（可能会在Windows控制台出错）
+            print(json_str, flush=True)
 
     @staticmethod
     def log(level, message):

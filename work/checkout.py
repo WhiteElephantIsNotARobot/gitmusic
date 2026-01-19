@@ -47,7 +47,7 @@ def main():
         EventEmitter.error(
             "Missing required environment variables (GITMUSIC_WORK_DIR, GITMUSIC_CACHE_ROOT, GITMUSIC_METADATA_FILE)"
         )
-        return
+        sys.exit(1)
 
     metadata_mgr = MetadataManager(Path(metadata_file_path))
     work_dir = Path(work_dir_path)
@@ -90,7 +90,7 @@ def main():
                     to_checkout.append(entry)
         else:
             EventEmitter.error("批量模式需要指定 --missing 或 --pattern")
-            return
+            sys.exit(1)
     else:
         # 单个检出模式
         identifier = args.identifier
@@ -103,7 +103,7 @@ def main():
             EventEmitter.error(
                 "  模式检出: python checkout.py --batch --pattern '关键词'"
             )
-            return
+            sys.exit(1)
 
         # 查找匹配条目
         for entry in all_entries:
@@ -123,7 +123,7 @@ def main():
 
     if not to_checkout:
         EventEmitter.result("error", message="未找到匹配的条目")
-        return
+        sys.exit(1)
 
     # 冲突检测：检查work目录中是否已存在目标文件
     conflicts = []

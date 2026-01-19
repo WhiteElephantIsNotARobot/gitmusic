@@ -258,19 +258,11 @@ def main():
         help="生成模式：local（全量）, incremental（增量）",
     )
 
-    # 目录选项
-    parser.add_argument(
-        "--cache-root",
-        help="缓存根目录（默认从环境变量GITMUSIC_CACHE_ROOT获取）",
-    )
-    parser.add_argument(
-        "--release-dir",
-        help="发布目录（默认从环境变量GITMUSIC_RELEASE_DIR获取）",
-    )
-    parser.add_argument(
-        "--metadata-file",
-        help="元数据文件路径（默认从环境变量GITMUSIC_METADATA_FILE获取）",
-    )
+    # 目录选项已移除：完全通过环境变量获取路径
+    # 脚本必须通过环境变量获取以下路径：
+    # - GITMUSIC_CACHE_ROOT: 缓存根目录
+    # - GITMUSIC_RELEASE_DIR: 发布目录
+    # - GITMUSIC_METADATA_FILE: 元数据文件路径
 
     # 处理选项
     parser.add_argument(
@@ -311,26 +303,26 @@ def main():
 
     args = parser.parse_args()
 
-    # 获取路径
-    cache_root_path = args.cache_root or os.environ.get("GITMUSIC_CACHE_ROOT")
-    release_dir_path = args.release_dir or os.environ.get("GITMUSIC_RELEASE_DIR")
-    metadata_file_path = args.metadata_file or os.environ.get("GITMUSIC_METADATA_FILE")
+    # 获取路径 - 完全从环境变量获取
+    cache_root_path = os.environ.get("GITMUSIC_CACHE_ROOT")
+    release_dir_path = os.environ.get("GITMUSIC_RELEASE_DIR")
+    metadata_file_path = os.environ.get("GITMUSIC_METADATA_FILE")
 
     if not cache_root_path:
         EventEmitter.error(
-            "Missing cache root. Specify --cache-root or set GITMUSIC_CACHE_ROOT."
+            "Missing cache root. Set GITMUSIC_CACHE_ROOT environment variable."
         )
         return
 
     if not release_dir_path:
         EventEmitter.error(
-            "Missing release directory. Specify --release-dir or set GITMUSIC_RELEASE_DIR."
+            "Missing release directory. Set GITMUSIC_RELEASE_DIR environment variable."
         )
         return
 
     if not metadata_file_path:
         EventEmitter.error(
-            "Missing metadata file. Specify --metadata-file or set GITMUSIC_METADATA_FILE."
+            "Missing metadata file. Set GITMUSIC_METADATA_FILE environment variable."
         )
         return
 

@@ -78,3 +78,5 @@ celerybeat-schedule
 *.sql
 *.sqlite
 *.sqlite3
+all_python_files_merged.md
+merge_py_files.py

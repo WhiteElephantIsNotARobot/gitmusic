@@ -39,22 +39,43 @@ def main():
         EventEmitter.error(
             "Missing required environment variables (GITMUSIC_WORK_DIR, GITMUSIC_CACHE_ROOT, GITMUSIC_METADATA_FILE)"
         )
-        return
+        sys.exit(1)
 
     metadata_mgr = MetadataManager(Path(metadata_file_path))
     repo_root = Path(cache_root_path).parent  # 假设 cache 在 repo 根目录下
+    work_dir = Path(work_dir_path)
 
     # 阶段 1: 扫描工作目录
-    EventEmitter.phase_start("scan")
     EventEmitter.log("info", "扫描工作目录中的音频文件")
+
+    # 先统计文件数量用于进度显示
+    files = list(work_dir.glob("*.mp3"))
+    if not files:
+        EventEmitter.result("ok", message="工作目录为空")
+        return
+
+    EventEmitter.phase_start("scan", total_items=len(files))
+
     try:
-        items, error = publish_logic(metadata_mgr, repo_root, args.changed_only)
+        # 修改publish_logic以支持进度回调
+        def scan_progress_callback(processed, total):
+            EventEmitter.batch_progress("scan", processed, total)
+
+        items, error = publish_logic(
+            metadata_mgr, repo_root, args.changed_only, scan_progress_callback
+        )
         if error:
             EventEmitter.error(f"扫描失败: {error}")
-            return
+            sys.exit(1)
     except Exception as e:
         EventEmitter.error(f"扫描过程中发生错误: {str(e)}")
-        return
+        sys.exit(1)
+    except Exception as e:
+        EventEmitter.error(f"扫描过程中发生错误: {str(e)}")
+        sys.exit(1)
+    except Exception as e:
+        EventEmitter.error(f"扫描过程中发生错误: {str(e)}")
+        sys.exit(1)
 
     if not items:
         EventEmitter.result("ok", message="没有需要处理的文件")
@@ -82,10 +103,30 @@ def main():
             else "unchanged"
         )
         reason = item.get("reason", "")
+
+        # 构建字段变更信息
+        field_changes = item.get("field_changes")
+        field_change_str = ""
+        if field_changes:
+            changes = []
+            for field, change in field_changes.items():
+                old_val = change.get("old")
+                new_val = change.get("new")
+                if isinstance(old_val, list):
+                    old_val = ", ".join(old_val)
+                if isinstance(new_val, list):
+                    new_val = ", ".join(new_val)
+                if old_val is None:
+                    changes.append(f"{field}: {new_val}")
+                else:
+                    changes.append(f"{field}: {old_val} -> {new_val}")
+            if changes:
+                field_change_str = " | " + " | ".join(changes)
+
         EventEmitter.item_event(
             item["path"].name,
             status,
-            message=f"{reason} - 标题: {item['title']}, 艺术家: {', '.join(item['artists'])}",
+            message=f"{reason} - 标题: {item['title']}, 艺术家: {', '.join(item['artists'])}{field_change_str}",
         )
         EventEmitter.batch_progress("preview", i + 1, len(items))
 
@@ -106,6 +147,7 @@ def main():
                     if item.get("is_changed")
                     else "unchanged",
                     "reason": item.get("reason", ""),
+                    "field_changes": item.get("field_changes"),
                 }
                 for item in items
             ],

@@ -49,7 +49,7 @@ def main():
         return 1
 
     # 分析阶段
-    EventEmitter.phase_start("sync_analyze")
+    # 不显示进度条，分析完成后直接进入同步阶段
 
     # 声明变量（在try块外也可访问）
     to_upload = []

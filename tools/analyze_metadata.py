@@ -150,17 +150,14 @@ def main():
     parser.add_argument(
         "query", nargs="?", default="", help="搜索查询（在所有字段中搜索）"
     )
-    parser.add_argument("--search", help="搜索关键词（与query参数相同功能）")
     parser.add_argument("--search-field", help="指定搜索字段")
-    parser.add_argument("--case-sensitive", action="store_true", help="区分大小写搜索")
 
     # 过滤选项
     parser.add_argument(
         "--missing", help="查找缺失指定字段的条目（逗号分隔，如：cover,lyrics,album）"
     )
-    parser.add_argument("--has", help="查找包含指定字段的条目（逗号分隔）")
     parser.add_argument(
-        "--filter", help="过滤条件（暂不支持，使用--missing或--has替代）"
+        "--filter", help="输出时过滤字段（逗号分隔，如：title,artists,album）"
     )
 
     # 提取选项
@@ -169,17 +166,7 @@ def main():
         "--line", help="按行号读取（逗号分隔或范围，如：1,3,5 或 1-10）"
     )
 
-    # 输出选项
-    parser.add_argument("--stats", action="store_true", help="显示统计信息")
-    parser.add_argument("--count", action="store_true", help="只显示匹配数量")
-    parser.add_argument("--output", help="输出文件路径（JSON格式）")
-    parser.add_argument("--duplicates", action="store_true", help="分析重复项")
-
     args = parser.parse_args()
-
-    # 处理search参数：如果提供了--search，则覆盖query
-    if args.search:
-        args.query = args.search
 
     # 从环境变量获取元数据文件路径
     metadata_file_path = os.environ.get("GITMUSIC_METADATA_FILE")
@@ -190,7 +177,6 @@ def main():
     metadata_mgr = MetadataManager(Path(metadata_file_path))
     all_entries = metadata_mgr.load_all()
 
-    EventEmitter.phase_start("analyze")
     EventEmitter.log("info", f"Loaded {len(all_entries)} metadata entries")
 
     # 按行号过滤
@@ -228,7 +214,7 @@ def main():
             all_entries,
             args.query,
             args.search_field,
-            args.case_sensitive,
+            False,
         )
         EventEmitter.log("info", f"Found {len(all_entries)} entries matching search")
 
@@ -240,57 +226,12 @@ def main():
             "info", f"Found {len(all_entries)} entries missing specified fields"
         )
 
-    # 过滤包含字段
-    if args.has:
-        has_fields = [f.strip() for f in args.has.split(",")]
-        # 反逻辑：保留包含所有指定字段的条目
-        filtered = []
-        for entry in all_entries:
-            if all(entry.get(field) for field in has_fields):
-                filtered.append(entry)
-        all_entries = filtered
-        EventEmitter.log(
-            "info", f"Found {len(all_entries)} entries with all specified fields"
-        )
-
     # 提取字段
     if args.fields:
         fields_to_extract = [f.strip() for f in args.fields.split(",")]
         all_entries = extract_fields(all_entries, fields_to_extract)
         EventEmitter.log(
             "info", f"Extracted specified fields from {len(all_entries)} entries"
-        )
-
-    # 只显示数量
-    if args.count:
-        EventEmitter.result(
-            "ok",
-            message=f"Found {len(all_entries)} matching entries",
-            artifacts={"count": len(all_entries)},
-        )
-        return
-
-    # 显示统计信息
-    if args.stats:
-        stats = calculate_statistics(all_entries)
-        EventEmitter.result(
-            "ok",
-            message=f"Statistics for {len(all_entries)} entries",
-            artifacts={"statistics": stats, "sample_entries": all_entries[:5]},
-        )
-        return
-
-    # 输出到文件
-    if args.output:
-        output_path = Path(args.output)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        with open(output_path, "w", encoding="utf-8") as f:
-            for entry in all_entries:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-
-        EventEmitter.log(
-            "info", f"Exported {len(all_entries)} entries to {output_path}"
         )
 
     # 默认输出结果
@@ -300,8 +241,9 @@ def main():
         "truncated": len(all_entries) > 100,
     }
 
-    if len(all_entries) > 100:
-        EventEmitter.log("warn", f"Showing first 100 of {len(all_entries)} entries")
+    # 截断提示由CLI统一显示，此处不再发送警告消息
+    # if len(all_entries) > 100:
+    #     EventEmitter.log("warn", f"Showing first 100 of {len(all_entries)} entries")
 
     EventEmitter.result(
         "ok",

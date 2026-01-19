@@ -70,22 +70,16 @@ class HashUtils:
                 "debug", f"Audio hashing tooling: {json.dumps(tooling_info)}"
             )
 
-        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        sha256_obj = hashlib.sha256()
-
-        while True:
-            chunk = process.stdout.read(4096)
-            if not chunk:
-                break
-            sha256_obj.update(chunk)
-
-        process.wait()
-        if process.returncode != 0:
-            stderr_data = (
-                process.stderr.read().decode() if process.stderr else "Unknown error"
-            )
+        try:
+            result = subprocess.run(cmd, capture_output=True, timeout=30, check=True)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("FFmpeg计算哈希超时（30秒）")
+        except subprocess.CalledProcessError as e:
+            stderr_data = e.stderr.decode() if e.stderr else "Unknown error"
             raise RuntimeError(f"FFmpeg failed to calculate hash: {stderr_data}")
 
+        sha256_obj = hashlib.sha256()
+        sha256_obj.update(result.stdout)
         hexdigest = sha256_obj.hexdigest()
         oid = f"sha256:{hexdigest}"
 

@@ -176,10 +176,6 @@ def main():
     )
     parser.add_argument("url", nargs="?", help="视频URL")
     parser.add_argument("--batch-file", help="包含URL列表的文件路径（每行一个URL）")
-    parser.add_argument(
-        "--output-dir",
-        help="输出目录（默认从环境变量GITMUSIC_WORK_DIR获取）",
-    )
     parser.add_argument("--no-cover", action="store_true", help="不提取封面")
     parser.add_argument(
         "--metadata-only", action="store_true", help="仅获取元数据，不下载"
@@ -188,19 +184,13 @@ def main():
     parser.add_argument("--limit", type=int, help="最大下载数量（批量模式）")
     args = parser.parse_args()
 
-    # 获取输出目录
-    output_dir = None
-    if args.output_dir:
-        output_dir = Path(args.output_dir)
-    else:
-        work_dir_path = os.environ.get("GITMUSIC_WORK_DIR")
-        if work_dir_path:
-            output_dir = Path(work_dir_path)
-        else:
-            EventEmitter.error(
-                "Missing output directory. Specify --output-dir or set GITMUSIC_WORK_DIR environment variable."
-            )
-            return
+    # 获取输出目录 - 仅从环境变量获取
+    work_dir_path = os.environ.get("GITMUSIC_WORK_DIR")
+    if not work_dir_path:
+        EventEmitter.error("Missing GITMUSIC_WORK_DIR environment variable.")
+        return
+
+    output_dir = Path(work_dir_path)
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
