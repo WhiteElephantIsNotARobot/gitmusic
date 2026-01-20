@@ -17,6 +17,7 @@ from .git import (
     git_pull,
     git_commit_and_push,
 )
+from .context import Context, create_context
 
 __all__ = [
     "EventEmitter",
@@ -32,4 +33,6 @@ __all__ = [
     "git_push",
     "git_pull",
     "git_commit_and_push",
+    "Context",
+    "create_context",
 ]

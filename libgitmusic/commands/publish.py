@@ -92,9 +92,10 @@ def _ensure_required_metadata(metadata: dict, audio_path: Path) -> dict:
     return metadata
 
 
-def publish_logic(metadata_mgr, repo_root, changed_only=False, progress_callback=None):
+def publish_logic(metadata_mgr, changed_only=False, progress_callback=None):
     """Publish 命令的核心业务逻辑"""
-    work_dir = repo_root / "work"
+    # 从metadata_mgr的context获取工作目录
+    work_dir = metadata_mgr.context.work_dir
     files = list(work_dir.glob("*.mp3"))
 
     if not files:
@@ -168,8 +169,11 @@ def publish_logic(metadata_mgr, repo_root, changed_only=False, progress_callback
     return to_process, None
 
 
-def execute_publish(metadata_mgr, repo_root, items, progress_callback=None):
+def execute_publish(metadata_mgr, items, progress_callback=None):
     """执行真正的发布动作"""
+    # 从metadata_mgr的context获取缓存根目录
+    cache_root = metadata_mgr.context.cache_root
+
     for item in items:
         if progress_callback:
             progress_callback(item["path"].name)
@@ -181,24 +185,14 @@ def execute_publish(metadata_mgr, repo_root, items, progress_callback=None):
             cover_hash = hashlib.sha256(cover_data).hexdigest()
             cover_oid = f"sha256:{cover_hash}"
             cover_path = (
-                repo_root
-                / "cache"
-                / "covers"
-                / "sha256"
-                / cover_hash[:2]
-                / f"{cover_hash}.jpg"
+                cache_root / "covers" / "sha256" / cover_hash[:2] / f"{cover_hash}.jpg"
             )
             AudioIO.atomic_write(cover_data, cover_path)
 
         # 2. 音频
         audio_hash = item["audio_oid"].split(":")[1]
         obj_path = (
-            repo_root
-            / "cache"
-            / "objects"
-            / "sha256"
-            / audio_hash[:2]
-            / f"{audio_hash}.mp3"
+            cache_root / "objects" / "sha256" / audio_hash[:2] / f"{audio_hash}.mp3"
         )
         if not obj_path.exists():
             with open(item["path"], "rb") as f:

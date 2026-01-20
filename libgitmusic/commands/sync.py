@@ -166,11 +166,9 @@ def execute_sync(
         def upload_task(rel_path: str):
             local_path = cache_root / rel_path
             try:
-                if sync_with_retry(transport.upload, local_path, rel_path, retries):
-                    EventEmitter.item_event(rel_path, "uploaded", "")
-                    return True
-                else:
-                    return False
+                transport.upload(local_path, rel_path)
+                # transport.upload内部已发出item_event
+                return True
             except Exception as e:
                 EventEmitter.error(f"上传失败: {str(e)}", {"file": rel_path})
                 return False

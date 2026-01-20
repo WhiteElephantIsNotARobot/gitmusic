@@ -34,6 +34,7 @@ from libgitmusic.audio import AudioIO
 from libgitmusic.hash_utils import HashUtils
 from libgitmusic.locking import LockManager
 from libgitmusic.transport import TransportAdapter
+from libgitmusic.context import Context, create_context
 from libgitmusic.commands import publish as publish_cmd
 from libgitmusic.commands import checkout as checkout_cmd
 from libgitmusic.commands import sync as sync_cmd
@@ -79,6 +80,7 @@ class StepContext:
         metadata_mgr: MetadataManager,
         object_store: ObjectStore,
         lock_manager: LockManager,
+        context: Optional["Context"] = None,
     ):
         self.command_name = command_name
         self.args = args
@@ -86,6 +88,7 @@ class StepContext:
         self.metadata_mgr = metadata_mgr
         self.object_store = object_store
         self.lock_manager = lock_manager
+        self.context = context
         self.artifacts = {}
         self.start_time = time.time()
 
@@ -99,17 +102,42 @@ class GitMusicCLI:
 
     def __init__(self, config_path: Optional[str] = None):
         self.repo_root = Path(__file__).parent.parent
-        self.project_root = self.repo_root.parent
-        self.config = self._load_config(config_path)
 
-        # 初始化核心组件
-        metadata_file = self._get_path("metadata_file")
-        self.metadata_mgr = MetadataManager(metadata_file)
+        # 确定项目根目录（保持向后兼容）
+        if config_path:
+            config_file = Path(config_path)
+            if config_file.is_absolute():
+                project_root = config_file.parent
+            else:
+                project_root = (self.repo_root.parent / config_path).parent
+        else:
+            project_root = self.repo_root.parent
 
-        cache_root = self._get_path("cache_root")
-        self.object_store = ObjectStore(cache_root)
+        # 构建配置文件路径（如果未提供则使用默认）
+        if config_path is None:
+            config_path = str(project_root / "config.yaml")
 
-        self.lock_manager = LockManager(self.project_root / ".locks")
+        # 创建上下文（包含所有路径和配置）
+        self.context = create_context(config_path)
+        self.project_root = self.context.project_root
+        self.config = self.context.config
+
+        # 修正 metadata_file 路径（保持向后兼容，默认使用 repo/metadata.jsonl）
+        if self.context.metadata_file == self.project_root / "metadata.jsonl":
+            self.context.metadata_file = self.repo_root / "metadata.jsonl"
+
+        # 日志配置
+        self.log_only = False  # 默认关闭，由命令行参数设置
+        from libgitmusic.events import EventEmitter
+
+        EventEmitter.setup_logging(
+            logs_dir=self.context.logs_dir, log_only=self.log_only
+        )
+
+        # 初始化核心组件（使用上下文）
+        self.metadata_mgr = MetadataManager(self.context)
+        self.object_store = ObjectStore(self.context)
+        self.lock_manager = LockManager(self.context)
 
         # REPL会话（延迟初始化）
         self.session = None
@@ -125,45 +153,12 @@ class GitMusicCLI:
         # 统计信息
         self.summary_stats = {}
 
-    def _load_config(self, path: Optional[str]) -> dict:
-        """加载配置文件"""
-        config_file = Path(path) if path else self.project_root / "config.yaml"
-        if config_file.exists():
-            import yaml
-
-            with open(config_file, "r", encoding="utf-8") as f:
-                return yaml.safe_load(f)
-        return {
-            "transport": {
-                "user": "white_elephant",
-                "host": "debian-server",
-                "remote_data_root": "/srv/music/data",
-                "retries": 5,
-                "timeout": 60,
-                "workers": 4,
-            },
-            "paths": {
-                "work_dir": str(self.project_root / "work"),
-                "cache_root": str(self.project_root / "cache"),
-                "metadata_file": str(self.repo_root / "metadata.jsonl"),
-                "release_dir": str(self.project_root / "release"),
-            },
-            "image": {"quality": 2},
-        }
-
-    def _get_path(self, key: str) -> Path:
-        """从配置获取路径"""
-        path_str = self.config.get("paths", {}).get(key, "")
-        if not path_str:
-            raise ValueError(f"Path key '{key}' not found in config")
-        return Path(path_str).resolve()
-
     def _inject_env(self):
         """注入环境变量供子进程使用"""
-        os.environ["GITMUSIC_WORK_DIR"] = str(self._get_path("work_dir"))
-        os.environ["GITMUSIC_CACHE_ROOT"] = str(self._get_path("cache_root"))
-        os.environ["GITMUSIC_METADATA_FILE"] = str(self._get_path("metadata_file"))
-        transport = self.config.get("transport", {})
+        os.environ["GITMUSIC_WORK_DIR"] = str(self.context.work_dir)
+        os.environ["GITMUSIC_CACHE_ROOT"] = str(self.context.cache_root)
+        os.environ["GITMUSIC_METADATA_FILE"] = str(self.context.metadata_file)
+        transport = self.context.transport_config
         os.environ["GITMUSIC_REMOTE_USER"] = transport.get("user", "")
         os.environ["GITMUSIC_REMOTE_HOST"] = transport.get("host", "")
         os.environ["GITMUSIC_REMOTE_DATA_ROOT"] = transport.get("remote_data_root", "")
@@ -208,6 +203,39 @@ class GitMusicCLI:
 
     def _process_event_stream(self, process: subprocess.Popen, phase_name: str) -> int:
         """处理事件流并显示进度"""
+        # log-only模式：直接输出原始JSONL，不渲染进度
+        if self.log_only:
+            if process.stdout is None:
+                process.wait()
+                return process.returncode
+            for line in process.stdout:
+                line = line.rstrip("\n")
+                if not line:
+                    continue
+                # 直接输出到stdout
+                try:
+                    sys.stdout.buffer.write(line.encode("utf-8"))
+                    sys.stdout.buffer.write(b"\n")
+                    sys.stdout.buffer.flush()
+                except:
+                    print(line, flush=True)
+                # 尝试解析JSON，过滤敏感数据后写入日志文件
+                try:
+                    event = json.loads(line)
+                    from libgitmusic.events import EventEmitter
+
+                    filtered_event = EventEmitter._filter_sensitive_data(event)
+                    json_str = json.dumps(filtered_event, ensure_ascii=False)
+                    if EventEmitter._log_file is not None:
+                        EventEmitter._log_file.write(json_str + "\n")
+                        EventEmitter._log_file.flush()
+                except json.JSONDecodeError:
+                    # 非JSON行，忽略或写入原始行？
+                    pass
+            process.wait()
+            return process.returncode
+
+        # 正常模式：使用rich进度渲染
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -351,7 +379,6 @@ class GitMusicCLI:
             # 调用库函数
             items, error_msg = publish_cmd.publish_logic(
                 ctx.metadata_mgr,
-                self.project_root,
                 changed_only=changed_only,
                 progress_callback=progress_callback,
             )
@@ -407,7 +434,6 @@ class GitMusicCLI:
             # 调用库函数
             publish_cmd.execute_publish(
                 ctx.metadata_mgr,
-                self.project_root,
                 items,
                 progress_callback=progress_callback,
             )
@@ -475,7 +501,7 @@ class GitMusicCLI:
             force = ctx.artifacts.get("force", False)
 
             # 检查工作目录冲突
-            work_dir = self._get_path("work_dir")
+            work_dir = self.context.work_dir
             if not force and any(work_dir.glob("*.mp3")):
                 EventEmitter.error(
                     "工作目录非空",
@@ -553,15 +579,8 @@ class GitMusicCLI:
                     i += 1
 
             # 获取配置
-            cache_root = self._get_path("cache_root")
-            transport_cfg = self.config.get("transport", {})
-            transport = TransportAdapter(
-                user=transport_cfg.get("user"),
-                host=transport_cfg.get("host"),
-                remote_data_root=transport_cfg.get(
-                    "remote_data_root", "/srv/music/data"
-                ),
-            )
+            cache_root = self.context.cache_root
+            transport = TransportAdapter(self.context)
 
             # 调用库函数
             exit_code = sync_cmd.sync_logic(
@@ -620,9 +639,9 @@ class GitMusicCLI:
                     i += 1
 
             # 获取配置
-            cache_root = self._get_path("cache_root")
-            metadata_file = self._get_path("metadata_file")
-            release_dir = self._get_path("release_dir") if mode == "release" else None
+            cache_root = self.context.cache_root
+            metadata_file = self.context.metadata_file
+            release_dir = self.context.release_dir if mode == "release" else None
 
             # 检查是否有需要针对性校验的audio_oids
             audio_oids = ctx.artifacts.get("processed_audio_oids")
@@ -650,7 +669,7 @@ class GitMusicCLI:
                 EventEmitter.result("ok", message="没有需要提交的更改")
                 return iter([])
 
-            metadata_file = self._get_path("metadata_file")
+            metadata_file = self.context.metadata_file
             repo_root = self.project_root
 
             # 生成提交消息
@@ -707,8 +726,8 @@ class GitMusicCLI:
                     i += 1
 
             # 获取配置
-            cache_root = self._get_path("cache_root")
-            metadata_file = self._get_path("metadata_file")
+            cache_root = self.context.cache_root
+            metadata_file = self.context.metadata_file
             transport_cfg = self.config.get("transport", {})
             remote_user = transport_cfg.get("user")
             remote_host = transport_cfg.get("host")
@@ -768,7 +787,7 @@ class GitMusicCLI:
                     i += 1
 
             # 获取发布目录
-            release_dir = self._get_path("release_dir")
+            release_dir = self.context.release_dir
             release_dir.mkdir(parents=True, exist_ok=True)
 
             # 执行git pull（规范要求）
@@ -1121,7 +1140,7 @@ class GitMusicCLI:
                 return iter([])
 
             # 获取工作目录
-            work_dir = self._get_path("work_dir")
+            work_dir = self.context.work_dir
             work_dir.mkdir(parents=True, exist_ok=True)
 
             # 调用库函数
@@ -1167,6 +1186,23 @@ class GitMusicCLI:
 
     def _handle_event(self, event):
         """处理单个事件，更新日志和统计"""
+        # log-only模式：直接输出JSONL
+        if self.log_only:
+            from libgitmusic.events import EventEmitter
+
+            filtered_event = EventEmitter._filter_sensitive_data(event)
+            import json
+
+            json_str = json.dumps(filtered_event, ensure_ascii=False)
+            try:
+                sys.stdout.buffer.write(json_str.encode("utf-8"))
+                sys.stdout.buffer.write(b"\n")
+                sys.stdout.buffer.flush()
+            except:
+                print(json_str, flush=True)
+            # 注意：不执行后续的rich渲染和统计更新
+            return
+
         # 添加到事件日志
         self.event_log.append(event)
 
@@ -1268,6 +1304,9 @@ class GitMusicCLI:
         # 注册事件监听器
         from libgitmusic.events import EventEmitter
 
+        # 启动日志文件记录
+        EventEmitter.start_log_file(command_name=name)
+
         EventEmitter.register_listener(self._handle_event)
         # 记录开始时间
         self.summary_stats["start_time"] = time.time()
@@ -1293,6 +1332,7 @@ class GitMusicCLI:
             metadata_mgr=self.metadata_mgr,
             object_store=self.object_store,
             lock_manager=self.lock_manager,
+            context=self.context,
         )
 
         try:
@@ -1347,6 +1387,8 @@ class GitMusicCLI:
             from libgitmusic.events import EventEmitter
 
             EventEmitter.unregister_listener(self._handle_event)
+            # 停止日志记录
+            EventEmitter.stop_logging()
             # 释放锁
             if cmd.requires_lock:
                 self.lock_manager.release_metadata_lock()
@@ -1439,12 +1481,26 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="GitMusic CLI")
+    parser.add_argument(
+        "--log-only", action="store_true", help="仅输出JSONL日志，不渲染人类友好界面"
+    )
+    parser.add_argument("--logs-dir", help="日志目录路径")
     parser.add_argument("command", nargs="?", help="命令名称")
     parser.add_argument("args", nargs=argparse.REMAINDER, help="命令参数")
 
     args = parser.parse_args()
 
     cli = GitMusicCLI()
+
+    # 覆盖日志配置（如果命令行指定）
+    if args.logs_dir:
+        cli.context.logs_dir = Path(args.logs_dir).resolve()
+    if args.log_only:
+        cli.log_only = True
+    if args.logs_dir or args.log_only:
+        from libgitmusic.events import EventEmitter
+
+        EventEmitter.setup_logging(logs_dir=cli.context.logs_dir, log_only=cli.log_only)
 
     if args.command:
         cli.run_command(args.command, args.args)

@@ -9,17 +9,20 @@ from .events import EventEmitter
 class LockManager:
     """锁管理器，提供文件锁和进程锁功能"""
 
-    def __init__(self, lock_dir: Optional[Path] = None):
+    def __init__(self, context: "Context"):
         """
         初始化锁管理器
 
         Args:
-            lock_dir: 锁文件目录，如果为None则使用系统临时目录
+            context: 上下文对象，包含所有路径和配置
         """
-        if lock_dir is None:
-            lock_dir = Path(os.environ.get("GITMUSIC_WORK_DIR", Path.cwd())) / ".locks"
+        from .context import Context
 
-        self.lock_dir = lock_dir
+        if not isinstance(context, Context):
+            raise TypeError("context must be an instance of Context")
+
+        self.context = context
+        self.lock_dir = context.lock_dir
         self.lock_dir.mkdir(parents=True, exist_ok=True)
         self.active_locks = set()
 

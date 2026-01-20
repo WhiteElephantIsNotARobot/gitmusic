@@ -8,16 +8,22 @@ from .events import EventEmitter
 class ObjectStore:
     """对象存储管理器，负责音频和封面对象的存储、检索和校验"""
 
-    def __init__(self, cache_root: Path):
+    def __init__(self, context: "Context"):
         """
         初始化对象存储
 
         Args:
-            cache_root: 缓存根目录，包含 objects/ 和 covers/ 子目录
+            context: 上下文对象，包含所有路径和配置
         """
-        self.cache_root = cache_root
-        self.objects_dir = cache_root / "objects"
-        self.covers_dir = cache_root / "covers"
+        from .context import Context
+
+        if not isinstance(context, Context):
+            raise TypeError("context must be an instance of Context")
+
+        self.context = context
+        self.cache_root = context.cache_root
+        self.objects_dir = context.cache_root / "objects"
+        self.covers_dir = context.cache_root / "covers"
 
         # 确保目录存在
         self.objects_dir.mkdir(parents=True, exist_ok=True)
