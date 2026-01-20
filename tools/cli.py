@@ -36,6 +36,14 @@ from libgitmusic.locking import LockManager
 from libgitmusic.transport import TransportAdapter
 from libgitmusic.commands import publish as publish_cmd
 from libgitmusic.commands import checkout as checkout_cmd
+from libgitmusic.commands import sync as sync_cmd
+from libgitmusic.commands import verify as verify_cmd
+from libgitmusic.commands import cleanup as cleanup_cmd
+from libgitmusic.commands import release as release_cmd
+from libgitmusic.commands import analyze as analyze_cmd
+from libgitmusic.commands import download as download_cmd
+from libgitmusic.commands import compress_images as compress_cmd
+from libgitmusic.git import git_commit_and_push, git_pull
 
 console = Console()
 
@@ -47,7 +55,7 @@ class Command:
         self,
         name: str,
         desc: str,
-        steps: List[Callable] = None,
+        steps: Optional[List[Callable]] = None,
         requires_lock: bool = False,
         timeout_seconds: int = 3600,
         on_error: str = "stop",
@@ -164,7 +172,7 @@ class GitMusicCLI:
         self,
         name: str,
         desc: str,
-        steps: List[Callable] = None,
+        steps: Optional[List[Callable]] = None,
         requires_lock: bool = False,
         timeout_seconds: int = 3600,
         on_error: str = "stop",
@@ -210,6 +218,10 @@ class GitMusicCLI:
             console=console,
         ) as progress:
             task = None
+
+            if process.stdout is None:
+                process.wait()
+                return process.returncode
 
             for line in process.stdout:
                 line = line.strip()
@@ -400,16 +412,13 @@ class GitMusicCLI:
                 progress_callback=progress_callback,
             )
 
+            # 存储处理过的audio_oid供后续步骤使用
+            ctx.artifacts["processed_audio_oids"] = [
+                item["audio_oid"] for item in items
+            ]
+
             EventEmitter.result("ok", message=f"处理完成 {len(items)} 个项")
             return iter([])
-
-        self.register_command(
-            name="publish",
-            desc="发布本地改动 (分析->确认->压缩->校验->同步->提交)",
-            steps=[publish_scan, publish_process],
-            requires_lock=True,
-            on_error="stop",
-        )
 
         # 2. checkout命令 - 检出音乐到工作目录
         def checkout_filter(ctx: StepContext, input_iter: Iterator) -> Iterator[Dict]:
@@ -513,34 +522,14 @@ class GitMusicCLI:
         )
 
         # 3. sync命令 - 同步缓存
-        def sync_analyze(ctx: StepContext, input_iter: Iterator) -> Iterator[Dict]:
-            """分析同步差异"""
-            transport_cfg = self.config.get("transport", {})
-            transport = TransportAdapter(
-                user=transport_cfg.get("user"),
-                host=transport_cfg.get("host"),
-                remote_data_root=transport_cfg.get(
-                    "remote_data_root", "/srv/music/data"
-                ),
-            )
-
-            cache_root = self._get_path("cache_root")
-
-            # 列出本地和远程文件
-            local_files = {
-                str(p.relative_to(cache_root)).replace("\\", "/")
-                for p in cache_root.rglob("*")
-                if p.is_file() and p.suffix in [".mp3", ".jpg"]
-            }
-
-            remote_files = set(
-                transport.list_remote_files("objects")
-                + transport.list_remote_files("covers")
-            )
-
-            # 解析方向参数
+        def sync_step(ctx: StepContext, input_iter: Iterator) -> Iterator[Dict]:
+            """执行同步操作"""
+            # 解析参数
             direction = "both"
             dry_run = False
+            workers = 4
+            timeout = 60
+            retries = 3
             args = ctx.args
 
             i = 0
@@ -551,82 +540,47 @@ class GitMusicCLI:
                 elif args[i] == "--dry-run":
                     dry_run = True
                     i += 1
+                elif args[i] == "--workers" and i + 1 < len(args):
+                    workers = int(args[i + 1])
+                    i += 2
+                elif args[i] == "--timeout" and i + 1 < len(args):
+                    timeout = int(args[i + 1])
+                    i += 2
+                elif args[i] == "--retries" and i + 1 < len(args):
+                    retries = int(args[i + 1])
+                    i += 2
                 else:
                     i += 1
 
-            ctx.artifacts["direction"] = direction
-            ctx.artifacts["dry_run"] = dry_run
-            ctx.artifacts["transport"] = transport
-            ctx.artifacts["to_upload"] = list(local_files - remote_files)
-            ctx.artifacts["to_download"] = list(remote_files - local_files)
-
-            # 显示预览
-            table = Table(title="同步预览")
-            table.add_column("方向", style="bold")
-            table.add_column("数量", style="cyan")
-            if direction in ["upload", "both"]:
-                table.add_row(
-                    "上传 (Local -> Remote)", str(len(ctx.artifacts["to_upload"]))
-                )
-            if direction in ["download", "both"]:
-                table.add_row(
-                    "下载 (Remote -> Local)", str(len(ctx.artifacts["to_download"]))
-                )
-            console.print(table)
-
-            EventEmitter.result("ok", message="Sync analysis completed")
-            return iter([ctx.artifacts])
-
-        def sync_execute(ctx: StepContext, input_iter: Iterator) -> Iterator[Dict]:
-            """执行同步操作"""
-            artifacts = next(input_iter, {})
-            direction = artifacts.get("direction", "both")
-            dry_run = artifacts.get("dry_run", False)
-            transport = artifacts.get("transport")
-            to_upload = artifacts.get("to_upload", [])
-            to_download = artifacts.get("to_download", [])
-
+            # 获取配置
             cache_root = self._get_path("cache_root")
+            transport_cfg = self.config.get("transport", {})
+            transport = TransportAdapter(
+                user=transport_cfg.get("user"),
+                host=transport_cfg.get("host"),
+                remote_data_root=transport_cfg.get(
+                    "remote_data_root", "/srv/music/data"
+                ),
+            )
 
-            if dry_run:
-                EventEmitter.log("info", "Dry run mode - no files will be transferred")
-                return iter([])
+            # 调用库函数
+            exit_code = sync_cmd.sync_logic(
+                cache_root=cache_root,
+                transport=transport,
+                direction=direction,
+                workers=workers,
+                retries=retries,
+                timeout=timeout,
+                dry_run=dry_run,
+            )
 
-            # 上传文件
-            if direction in ["upload", "both"] and to_upload:
-                EventEmitter.phase_start("upload", total_items=len(to_upload))
-                for i, rel_path in enumerate(to_upload):
-                    local_path = cache_root / rel_path
-                    try:
-                        transport.upload(local_path, rel_path)
-                        EventEmitter.item_event(rel_path, "uploaded", "")
-                    except Exception as e:
-                        EventEmitter.error(
-                            f"Failed to upload {rel_path}", {"error": str(e)}
-                        )
-                    EventEmitter.batch_progress("upload", i + 1, len(to_upload))
-
-            # 下载文件
-            if direction in ["download", "both"] and to_download:
-                EventEmitter.phase_start("download", total_items=len(to_download))
-                for i, rel_path in enumerate(to_download):
-                    local_path = cache_root / rel_path
-                    try:
-                        transport.download(rel_path, local_path)
-                        EventEmitter.item_event(rel_path, "downloaded", "")
-                    except Exception as e:
-                        EventEmitter.error(
-                            f"Failed to download {rel_path}", {"error": str(e)}
-                        )
-                    EventEmitter.batch_progress("download", i + 1, len(to_download))
-
-            EventEmitter.result("ok", message="Sync completed")
+            # 返回空迭代器
             return iter([])
 
         self.register_command(
             name="sync",
             desc="同步本地缓存与服务器数据",
-            steps=[sync_analyze, sync_execute],
+            steps=[sync_step],
             requires_lock=False,
             on_error="continue",
         )
@@ -649,8 +603,76 @@ class GitMusicCLI:
         # verify命令 - 验证本地和远程文件完整性
         def verify_step(ctx: StepContext, input_iter: Iterator) -> Iterator[Dict]:
             """验证文件完整性"""
-            EventEmitter.phase_start("verify", total_items=0)
-            EventEmitter.result("warn", message="verify命令尚未实现")
+            # 解析参数
+            mode = "local"
+            custom_path = None
+            args = ctx.args
+
+            i = 0
+            while i < len(args):
+                if args[i] == "--mode" and i + 1 < len(args):
+                    mode = args[i + 1]
+                    i += 2
+                elif args[i] == "--path" and i + 1 < len(args):
+                    custom_path = Path(args[i + 1])
+                    i += 2
+                else:
+                    i += 1
+
+            # 获取配置
+            cache_root = self._get_path("cache_root")
+            metadata_file = self._get_path("metadata_file")
+            release_dir = self._get_path("release_dir") if mode == "release" else None
+
+            # 检查是否有需要针对性校验的audio_oids
+            audio_oids = ctx.artifacts.get("processed_audio_oids")
+
+            # 调用库函数
+            exit_code = verify_cmd.verify_logic(
+                cache_root=cache_root,
+                metadata_file=metadata_file,
+                mode=mode,
+                custom_path=custom_path,
+                release_dir=release_dir,
+                audio_oids=audio_oids,
+            )
+
+            return iter([])
+
+        # git提交步骤 - 提交元数据更改
+        def commit_step(ctx: StepContext, input_iter: Iterator) -> Iterator[Dict]:
+            """提交元数据更改到Git"""
+            # 获取处理的audio_oids数量
+            processed_audio_oids = ctx.artifacts.get("processed_audio_oids", [])
+            count = len(processed_audio_oids)
+
+            if count == 0:
+                EventEmitter.result("ok", message="没有需要提交的更改")
+                return iter([])
+
+            metadata_file = self._get_path("metadata_file")
+            repo_root = self.project_root
+
+            # 生成提交消息
+            if count == 1:
+                commit_msg = f"update: 1 item"
+            else:
+                commit_msg = f"update: {count} items"
+
+            # 使用git库提交并推送
+            success = git_commit_and_push(
+                repo_root=repo_root,
+                message=commit_msg,
+                paths=[str(metadata_file.relative_to(repo_root))],
+                remote="origin",
+                branch="main",
+            )
+
+            if success:
+                EventEmitter.result("ok", message=f"成功提交并推送 {count} 个更改")
+            else:
+                EventEmitter.result("error", message="Git提交推送失败")
+
             return iter([])
 
         self.register_command(
@@ -664,9 +686,190 @@ class GitMusicCLI:
         # cleanup命令 - 清理孤立对象
         def cleanup_step(ctx: StepContext, input_iter: Iterator) -> Iterator[Dict]:
             """清理孤立对象"""
-            EventEmitter.phase_start("cleanup", total_items=0)
-            EventEmitter.result("warn", message="cleanup命令尚未实现")
+            # 解析参数
+            mode = "local"
+            confirm = False
+            dry_run = False
+            args = ctx.args
+
+            i = 0
+            while i < len(args):
+                if args[i] == "--mode" and i + 1 < len(args):
+                    mode = args[i + 1]
+                    i += 2
+                elif args[i] == "--confirm":
+                    confirm = True
+                    i += 1
+                elif args[i] == "--dry-run":
+                    dry_run = True
+                    i += 1
+                else:
+                    i += 1
+
+            # 获取配置
+            cache_root = self._get_path("cache_root")
+            metadata_file = self._get_path("metadata_file")
+            transport_cfg = self.config.get("transport", {})
+            remote_user = transport_cfg.get("user")
+            remote_host = transport_cfg.get("host")
+            remote_data_root = transport_cfg.get("remote_data_root", "/srv/music/data")
+
+            # 调用库函数
+            exit_code = cleanup_cmd.cleanup_logic(
+                metadata_file=metadata_file,
+                cache_root=cache_root,
+                mode=mode,
+                confirm=confirm,
+                dry_run=dry_run,
+                remote_user=remote_user,
+                remote_host=remote_host,
+                remote_data_root=remote_data_root,
+            )
+
             return iter([])
+
+        # release命令 - 生成发布文件
+        def release_step(ctx: StepContext, input_iter: Iterator) -> Iterator[Dict]:
+            """生成发布文件"""
+            # 解析参数
+            mode = "local"
+            conflict_strategy = "suffix"
+            dry_run = False
+            limit = None
+            line_filter = None
+            hash_filter = None
+            search_filter = None
+            args = ctx.args
+
+            i = 0
+            while i < len(args):
+                if args[i] == "--mode" and i + 1 < len(args):
+                    mode = args[i + 1]
+                    i += 2
+                elif args[i] == "--conflict-strategy" and i + 1 < len(args):
+                    conflict_strategy = args[i + 1]
+                    i += 2
+                elif args[i] == "--dry-run":
+                    dry_run = True
+                    i += 1
+                elif args[i] == "--limit" and i + 1 < len(args):
+                    limit = int(args[i + 1])
+                    i += 2
+                elif args[i] == "--line" and i + 1 < len(args):
+                    line_filter = args[i + 1]
+                    i += 2
+                elif args[i] == "--hash" and i + 1 < len(args):
+                    hash_filter = args[i + 1]
+                    i += 2
+                elif args[i] == "--search" and i + 1 < len(args):
+                    search_filter = args[i + 1]
+                    i += 2
+                else:
+                    i += 1
+
+            # 获取发布目录
+            release_dir = self._get_path("release_dir")
+            release_dir.mkdir(parents=True, exist_ok=True)
+
+            # 执行git pull（规范要求）
+            if not git_pull(self.repo_root, remote="origin", branch="main"):
+                EventEmitter.error("Git pull失败，中止release操作")
+                return iter([])
+
+            # 调用库函数
+            entries_to_process, error_msg = release_cmd.release_logic(
+                metadata_mgr=ctx.metadata_mgr,
+                object_store=self.object_store,
+                release_dir=release_dir,
+                mode=mode,
+                conflict_strategy=conflict_strategy,
+                limit=limit,
+                line_filter=line_filter,
+                hash_filter=hash_filter,
+                search_filter=search_filter,
+                dry_run=dry_run,
+            )
+
+            if error_msg:
+                EventEmitter.error(f"Release逻辑失败: {error_msg}")
+                return iter([])
+
+            # 如果是干跑模式，输出结果但不执行
+            if dry_run:
+                artifacts = {
+                    "total_entries": len(entries_to_process),
+                    "release_dir": str(release_dir),
+                    "mode": mode,
+                    "sample_entries": [
+                        {
+                            "title": e.get("title"),
+                            "artists": e.get("artists"),
+                            "audio_oid": e.get("audio_oid"),
+                            "filename": release_cmd.generate_release_filename(e),
+                        }
+                        for e in entries_to_process[:5]
+                    ],
+                }
+
+                EventEmitter.result(
+                    "ok",
+                    message=f"Dry run: Would process {len(entries_to_process)} entries",
+                    artifacts=artifacts,
+                )
+                return iter([])
+
+            # 定义进度回调
+            processed = [0]
+            total = len(entries_to_process)
+
+            def progress_callback(current, total_items=None):
+                processed[0] = current
+                if total_items:
+                    EventEmitter.batch_progress("generate", current, total_items)
+                else:
+                    EventEmitter.batch_progress("generate", current, total)
+
+            # 执行发布
+            success_count, total_count = release_cmd.execute_release(
+                entries=entries_to_process,
+                object_store=self.object_store,
+                release_dir=release_dir,
+                conflict_strategy=conflict_strategy,
+                incremental=(mode == "incremental"),
+                progress_callback=progress_callback,
+            )
+
+            # 返回结果
+            artifacts = {
+                "total_entries": total_count,
+                "successful": success_count,
+                "failed": total_count - success_count,
+                "release_dir": str(release_dir),
+                "mode": mode,
+            }
+
+            if success_count == total_count:
+                EventEmitter.result(
+                    "ok",
+                    message=f"Successfully generated {success_count} release files",
+                    artifacts=artifacts,
+                )
+            else:
+                EventEmitter.result(
+                    "warn",
+                    message=f"Generated {success_count}/{total_count} release files",
+                    artifacts=artifacts,
+                )
+
+            return iter([])
+
+        self.register_command(
+            name="release",
+            desc="生成发布文件",
+            steps=[sync_step, verify_step, release_step],
+            requires_lock=True,
+            on_error="stop",
+        )
 
         self.register_command(
             name="cleanup",
@@ -676,34 +879,290 @@ class GitMusicCLI:
             on_error="stop",
         )
 
-        # release命令 - 生成发布文件
-        def release_step(ctx: StepContext, input_iter: Iterator) -> Iterator[Dict]:
-            """生成发布文件"""
-            EventEmitter.phase_start("release", total_items=0)
-            EventEmitter.result("warn", message="release命令尚未实现")
+        # compress-images命令 - 压缩封面图片
+        def compress_images_step(
+            ctx: StepContext, input_iter: Iterator
+        ) -> Iterator[Dict]:
+            """压缩封面图片"""
+            # 解析参数
+            quality = 85
+            max_width = 800
+            min_size_kb = 500
+            args = ctx.args
+
+            i = 0
+            while i < len(args):
+                if args[i] == "--quality" and i + 1 < len(args):
+                    quality = int(args[i + 1])
+                    i += 2
+                elif args[i] == "--max-width" and i + 1 < len(args):
+                    max_width = int(args[i + 1])
+                    i += 2
+                elif args[i] == "--min-size-kb" and i + 1 < len(args):
+                    min_size_kb = int(args[i + 1])
+                    i += 2
+                else:
+                    i += 1
+
+            # 调用库函数
+            entries_to_compress, error_msg = compress_cmd.compress_images_logic(
+                metadata_mgr=ctx.metadata_mgr,
+                object_store=self.object_store,
+                quality=quality,
+                max_width=max_width,
+                min_size_kb=min_size_kb,
+            )
+
+            if error_msg:
+                EventEmitter.error(f"Compress images逻辑失败: {error_msg}")
+                return iter([])
+
+            # 如果存在处理过的audio_oid列表，则只压缩这些条目的封面
+            processed_audio_oids = ctx.artifacts.get("processed_audio_oids")
+            if processed_audio_oids:
+                original_count = len(entries_to_compress)
+                entries_to_compress = [
+                    entry
+                    for entry in entries_to_compress
+                    if entry.get("audio_oid") in processed_audio_oids
+                ]
+                if entries_to_compress:
+                    EventEmitter.log(
+                        "info",
+                        f"Filtered compression to {len(entries_to_compress)}/{original_count} entries based on processed audio OIDs",
+                    )
+                else:
+                    EventEmitter.log(
+                        "info", "No processed entries require cover compression"
+                    )
+                    EventEmitter.result(
+                        "ok", message="No processed entries require cover compression"
+                    )
+                    return iter([])
+
+            # 定义进度回调
+            processed = [0]
+            total = len(entries_to_compress)
+
+            def progress_callback(current, total_items=None):
+                processed[0] = current
+                if total_items:
+                    EventEmitter.batch_progress(
+                        "compress_execute", current, total_items
+                    )
+                else:
+                    EventEmitter.batch_progress("compress_execute", current, total)
+
+            # 执行压缩动作
+            updated_count, total_count = compress_cmd.execute_compress_images(
+                entries_to_compress=entries_to_compress,
+                metadata_mgr=ctx.metadata_mgr,
+                object_store=self.object_store,
+                quality=quality,
+                max_width=max_width,
+                progress_callback=progress_callback,
+            )
+
+            # 返回结果
+            artifacts = {
+                "total_entries": total_count,
+                "updated": updated_count,
+                "quality": quality,
+                "max_width": max_width,
+                "min_size_kb": min_size_kb,
+            }
+
+            if updated_count == 0:
+                EventEmitter.result("ok", message="No images needed compression")
+            else:
+                EventEmitter.result(
+                    "ok",
+                    message=f"Compressed {updated_count} images",
+                    artifacts=artifacts,
+                )
+
             return iter([])
 
         self.register_command(
-            name="release",
-            desc="生成发布文件",
-            steps=[release_step],
+            name="publish",
+            desc="发布本地改动 (分析->确认->压缩->校验->同步->提交)",
+            steps=[
+                publish_scan,
+                publish_process,
+                compress_images_step,
+                verify_step,
+                sync_step,
+                commit_step,
+            ],
             requires_lock=True,
             on_error="stop",
         )
 
-        # analyze命令 - 分析元数据重复项
+        # analyze命令 - 分析元数据
         def analyze_step(ctx: StepContext, input_iter: Iterator) -> Iterator[Dict]:
-            """分析元数据重复项"""
-            EventEmitter.phase_start("analyze", total_items=0)
-            EventEmitter.result("warn", message="analyze命令尚未实现")
+            """分析元数据"""
+            # 解析参数
+            query = ""
+            search_field = None
+            missing_fields = None
+            fields_to_extract = None
+            line_filter = None
+            mode = "search"  # 'search', 'stats', 'duplicates'
+            args = ctx.args
+
+            i = 0
+            while i < len(args):
+                if args[i] == "--query" and i + 1 < len(args):
+                    query = args[i + 1]
+                    i += 2
+                elif args[i] == "--search-field" and i + 1 < len(args):
+                    search_field = args[i + 1]
+                    i += 2
+                elif args[i] == "--missing" and i + 1 < len(args):
+                    missing_fields = args[i + 1]
+                    i += 2
+                elif args[i] == "--fields" and i + 1 < len(args):
+                    fields_to_extract = args[i + 1]
+                    i += 2
+                elif args[i] == "--line" and i + 1 < len(args):
+                    line_filter = args[i + 1]
+                    i += 2
+                elif args[i] == "--mode" and i + 1 < len(args):
+                    mode = args[i + 1]
+                    i += 2
+                else:
+                    i += 1
+
+            # 调用库函数
+            entries, analysis_results, error_msg = analyze_cmd.analyze_logic(
+                metadata_mgr=ctx.metadata_mgr,
+                query=query,
+                search_field=search_field,
+                missing_fields=missing_fields,
+                fields_to_extract=fields_to_extract,
+                line_filter=line_filter,
+                mode=mode,
+            )
+
+            if error_msg:
+                EventEmitter.error(f"Analyze逻辑失败: {error_msg}")
+                return iter([])
+
+            # 执行分析动作
+            analyze_cmd.execute_analyze(
+                entries=entries,
+                analysis_results=analysis_results,
+                mode=mode,
+            )
+
             return iter([])
 
         self.register_command(
             name="analyze",
-            desc="分析元数据重复项",
+            desc="分析元数据（搜索、统计、重复项检测）",
             steps=[analyze_step],
             requires_lock=False,
             on_error="continue",
+        )
+
+        # download命令 - 下载音频文件
+        def download_step(ctx: StepContext, input_iter: Iterator) -> Iterator[Dict]:
+            """下载音频文件"""
+            # 解析参数
+            url = None
+            batch_file = None
+            no_cover = False
+            metadata_only = False
+            limit = None
+            args = ctx.args
+
+            i = 0
+            while i < len(args):
+                if args[i] == "--batch-file" and i + 1 < len(args):
+                    batch_file = args[i + 1]
+                    i += 2
+                elif args[i] == "--no-cover":
+                    no_cover = True
+                    i += 1
+                elif args[i] == "--metadata-only":
+                    metadata_only = True
+                    i += 1
+                elif args[i] == "--limit" and i + 1 < len(args):
+                    limit = int(args[i + 1])
+                    i += 2
+                elif not url and not args[i].startswith("-"):  # 第一个非选项参数作为URL
+                    url = args[i]
+                    i += 1
+                else:
+                    i += 1
+
+            # 收集URL
+            urls = []
+            if batch_file:
+                batch_file_path = Path(batch_file)
+                if not batch_file_path.exists():
+                    EventEmitter.error(f"Batch file not found: {batch_file_path}")
+                    return iter([])
+
+                with open(batch_file_path, "r", encoding="utf-8") as f:
+                    urls = [
+                        line.strip() for line in f if line.strip().startswith("http")
+                    ]
+
+                if not urls:
+                    EventEmitter.error(
+                        f"No valid URLs found in batch file: {batch_file_path}"
+                    )
+                    return iter([])
+            elif url:
+                urls = [url]
+            else:
+                EventEmitter.error("No URL provided. Specify URL or --batch-file.")
+                return iter([])
+
+            # 获取工作目录
+            work_dir = self._get_path("work_dir")
+            work_dir.mkdir(parents=True, exist_ok=True)
+
+            # 调用库函数
+            successful_downloads, failed_downloads, error_msg = (
+                download_cmd.download_logic(
+                    urls=urls,
+                    output_dir=work_dir,
+                    extract_cover=not no_cover,
+                    metadata_only=metadata_only,
+                    limit=limit,
+                )
+            )
+
+            if error_msg:
+                EventEmitter.error(f"Download逻辑失败: {error_msg}")
+                return iter([])
+
+            # 执行下载动作
+            download_cmd.execute_download(
+                successful_downloads=successful_downloads,
+                failed_downloads=failed_downloads,
+                output_dir=work_dir,
+                metadata_only=metadata_only,
+            )
+
+            return iter([])
+
+        self.register_command(
+            name="download",
+            desc="下载音频文件（支持YouTube等平台）",
+            steps=[download_step],
+            requires_lock=False,
+            on_error="continue",
+        )
+
+        self.register_command(
+            name="compress-images",
+            desc="压缩封面图片以节省空间",
+            steps=[compress_images_step],
+            requires_lock=True,
+            on_error="stop",
         )
 
     def _handle_event(self, event):

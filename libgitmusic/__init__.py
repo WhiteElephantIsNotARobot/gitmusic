@@ -9,6 +9,14 @@ from .audio import AudioIO
 from .object_store import ObjectStore
 from .hash_utils import HashUtils
 from .locking import LockManager
+from .git import (
+    GitOperations,
+    git_add,
+    git_commit,
+    git_push,
+    git_pull,
+    git_commit_and_push,
+)
 
 __all__ = [
     "EventEmitter",
@@ -18,4 +26,10 @@ __all__ = [
     "ObjectStore",
     "HashUtils",
     "LockManager",
+    "GitOperations",
+    "git_add",
+    "git_commit",
+    "git_push",
+    "git_pull",
+    "git_commit_and_push",
 ]

@@ -1,5 +1,4 @@
 import os
-import sys
 import json
 import subprocess
 import tempfile
@@ -7,12 +6,9 @@ import shutil
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 
-# 导入核心库
-sys.path.append(str(Path(__file__).parent.parent))
-from libgitmusic.events import EventEmitter
-from libgitmusic.audio import AudioIO
-from libgitmusic.hash_utils import HashUtils
-from libgitmusic.object_store import ObjectStore
+from ..events import EventEmitter
+from ..audio import AudioIO
+from ..hash_utils import HashUtils
 
 
 def fetch_metadata(url: str) -> Optional[Dict]:
@@ -73,35 +69,7 @@ def download_audio(
         ]
 
         EventEmitter.item_event(url, "downloading")
-        # 使用Popen实时读取yt-dlp输出
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            bufsize=1,
-            universal_newlines=True,
-        )
-
-        # 实时读取输出并转发
-        output_lines = []
-        if process.stdout is not None:
-            for line in process.stdout:
-                line = line.rstrip("\n")
-                output_lines.append(line)
-                # 将yt-dlp输出作为普通行输出（CLI会将其打印为灰色文本）
-                print(line, flush=True)
-                # 可选：解析进度信息并发送事件
-                # 这里可以添加进度解析逻辑
-
-        # 等待进程结束
-        returncode = process.wait()
-
-        if returncode != 0:
-            raise subprocess.CalledProcessError(
-                returncode, cmd, output="".join(output_lines)
-            )
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
 
         # 查找下载的文件
         mp3_files = list(temp_dir.glob("*.mp3"))
@@ -196,58 +164,32 @@ def download_audio(
             shutil.rmtree(temp_dir, ignore_errors=True)
 
 
-def main():
-    import argparse
+def download_logic(
+    urls: List[str],
+    output_dir: Path,
+    extract_cover: bool = True,
+    metadata_only: bool = False,
+    limit: Optional[int] = None,
+) -> Tuple[List[Dict], List[str], Optional[str]]:
+    """
+    Download命令的核心业务逻辑
 
-    parser = argparse.ArgumentParser(
-        description="下载音频文件并提取元数据（支持YouTube等平台）"
-    )
-    parser.add_argument("url", nargs="?", help="视频URL")
-    parser.add_argument("--batch-file", help="包含URL列表的文件路径（每行一个URL）")
-    parser.add_argument("--no-cover", action="store_true", help="不提取封面")
-    parser.add_argument(
-        "--metadata-only", action="store_true", help="仅获取元数据，不下载"
-    )
-    parser.add_argument("--no-preview", action="store_true", help="跳过元数据预览")
-    parser.add_argument("--limit", type=int, help="最大下载数量（批量模式）")
-    args = parser.parse_args()
+    Args:
+        urls: URL列表
+        output_dir: 输出目录
+        extract_cover: 是否提取封面
+        metadata_only: 是否仅获取元数据
+        limit: 最大下载数量
 
-    # 获取输出目录 - 仅从环境变量获取
-    work_dir_path = os.environ.get("GITMUSIC_WORK_DIR")
-    if not work_dir_path:
-        EventEmitter.error("Missing GITMUSIC_WORK_DIR environment variable.")
-        return
-
-    output_dir = Path(work_dir_path)
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # 收集URL
-    urls = []
-    if args.batch_file:
-        batch_file = Path(args.batch_file)
-        if not batch_file.exists():
-            EventEmitter.error(f"Batch file not found: {batch_file}")
-            return
-
-        with open(batch_file, "r", encoding="utf-8") as f:
-            urls = [line.strip() for line in f if line.strip().startswith("http")]
-
-        if not urls:
-            EventEmitter.error(f"No valid URLs found in batch file: {batch_file}")
-            return
-    elif args.url:
-        urls = [args.url]
-    else:
-        EventEmitter.error("No URL provided. Specify URL or --batch-file.")
-        return
-
+    Returns:
+        (成功下载列表, 失败URL列表, 错误消息)
+    """
     # 限制数量
-    if args.limit and args.limit > 0:
-        urls = urls[: args.limit]
+    if limit and limit > 0:
+        urls = urls[:limit]
 
-    # 元数据仅模式
-    if args.metadata_only:
+    if metadata_only:
+        # 元数据仅模式
         EventEmitter.phase_start("fetch_metadata", total_items=len(urls))
         metadata_list = []
 
@@ -269,64 +211,85 @@ def main():
 
             EventEmitter.batch_progress("fetch_metadata", i + 1, len(urls))
 
-        EventEmitter.result(
-            "ok",
-            message=f"Fetched metadata for {len(metadata_list)}/{len(urls)} URLs",
-            artifacts={"metadata": metadata_list},
-        )
-        return
+        return metadata_list, [], None
 
-    # 完整下载模式
-    EventEmitter.phase_start("download", total_items=len(urls))
+    else:
+        # 完整下载模式
+        EventEmitter.phase_start("download", total_items=len(urls))
 
-    successful_downloads = []
-    failed_downloads = []
+        successful_downloads = []
+        failed_downloads = []
 
-    for i, url in enumerate(urls):
-        EventEmitter.item_event(url, "processing")
+        for i, url in enumerate(urls):
+            EventEmitter.item_event(url, "processing")
 
-        file_path, metadata = download_audio(
-            url, output_dir, extract_cover=not args.no_cover
-        )
+            file_path, metadata = download_audio(
+                url, output_dir, extract_cover=extract_cover
+            )
 
-        if file_path and metadata:
-            successful_downloads.append(
-                {
-                    "url": url,
-                    "file": str(file_path),
-                    "audio_oid": metadata.get("audio_oid"),
-                    "cover_oid": metadata.get("cover_oid"),
-                    "title": metadata.get("title"),
-                    "artists": metadata.get("artists"),
-                }
+            if file_path and metadata:
+                successful_downloads.append(
+                    {
+                        "url": url,
+                        "file": str(file_path),
+                        "audio_oid": metadata.get("audio_oid"),
+                        "cover_oid": metadata.get("cover_oid"),
+                        "title": metadata.get("title"),
+                        "artists": metadata.get("artists"),
+                    }
+                )
+            else:
+                failed_downloads.append(url)
+                EventEmitter.item_event(url, "failed", "Download failed")
+
+            EventEmitter.batch_progress("download", i + 1, len(urls))
+
+        return successful_downloads, failed_downloads, None
+
+
+def execute_download(
+    successful_downloads: List[Dict],
+    failed_downloads: List[str],
+    output_dir: Path,
+    metadata_only: bool = False,
+    progress_callback=None,
+) -> None:
+    """
+    执行下载动作（主要是输出结果）
+
+    Args:
+        successful_downloads: 成功下载列表
+        failed_downloads: 失败URL列表
+        output_dir: 输出目录
+        metadata_only: 是否仅获取元数据
+        progress_callback: 进度回调函数
+    """
+    if metadata_only:
+        if not successful_downloads:
+            EventEmitter.result("warn", message="Failed to fetch metadata for any URLs")
+        else:
+            EventEmitter.result(
+                "ok",
+                message=f"Fetched metadata for {len(successful_downloads)} URLs",
+                artifacts={"metadata": successful_downloads},
+            )
+    else:
+        artifacts = {
+            "successful": successful_downloads,
+            "failed": failed_downloads,
+            "total_urls": len(successful_downloads) + len(failed_downloads),
+            "output_dir": str(output_dir),
+        }
+
+        if failed_downloads:
+            EventEmitter.result(
+                "warn",
+                message=f"Download completed with {len(failed_downloads)} failures",
+                artifacts=artifacts,
             )
         else:
-            failed_downloads.append(url)
-            EventEmitter.item_event(url, "failed", "Download failed")
-
-        EventEmitter.batch_progress("download", i + 1, len(urls))
-
-    # 生成结果
-    artifacts = {
-        "successful": successful_downloads,
-        "failed": failed_downloads,
-        "total_urls": len(urls),
-        "output_dir": str(output_dir),
-    }
-
-    if failed_downloads:
-        EventEmitter.result(
-            "warn",
-            message=f"Download completed with {len(failed_downloads)} failures",
-            artifacts=artifacts,
-        )
-    else:
-        EventEmitter.result(
-            "ok",
-            message=f"Successfully downloaded {len(successful_downloads)} files",
-            artifacts=artifacts,
-        )
-
-
-if __name__ == "__main__":
-    main()
+            EventEmitter.result(
+                "ok",
+                message=f"Successfully downloaded {len(successful_downloads)} files",
+                artifacts=artifacts,
+            )

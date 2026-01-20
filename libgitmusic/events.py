@@ -35,15 +35,18 @@ class EventEmitter:
                 listener(event)
             except Exception:
                 pass
-        json_str = json.dumps(event, ensure_ascii=False)
-        try:
-            # 尝试使用UTF-8编码输出，避免控制台编码问题
-            sys.stdout.buffer.write(json_str.encode("utf-8"))
-            sys.stdout.buffer.write(b"\n")
-            sys.stdout.buffer.flush()
-        except:
-            # 如果失败，回退到普通print（可能会在Windows控制台出错）
-            print(json_str, flush=True)
+
+        # 只有在没有监听器时才输出JSONL（例如脚本独立运行）
+        if not _event_listeners:
+            json_str = json.dumps(event, ensure_ascii=False)
+            try:
+                # 尝试使用UTF-8编码输出，避免控制台编码问题
+                sys.stdout.buffer.write(json_str.encode("utf-8"))
+                sys.stdout.buffer.write(b"\n")
+                sys.stdout.buffer.flush()
+            except:
+                # 如果失败，回退到普通print（可能会在Windows控制台出错）
+                print(json_str, flush=True)
 
     @staticmethod
     def log(level, message):

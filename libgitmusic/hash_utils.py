@@ -1,6 +1,7 @@
 import hashlib
 import subprocess
 import json
+import threading
 from pathlib import Path
 from typing import Dict, Any, Optional
 from .events import EventEmitter
@@ -71,17 +72,70 @@ class HashUtils:
             )
 
         try:
-            result = subprocess.run(cmd, capture_output=True, timeout=30, check=True)
+            # 使用Popen实时读取输出
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                bufsize=1,  # 行缓冲
+                universal_newlines=False,  # 二进制模式，因为stdout是音频数据
+            )
+
+            # 存储stdout数据用于哈希计算
+            stdout_chunks = []
+            stderr_lines = []
+
+            # 读取stderr的辅助函数（实时打印进度）
+            def read_stderr():
+                try:
+                    while True:
+                        line = process.stderr.readline()
+                        if not line:
+                            break
+                        # 解码为字符串并移除尾部换行符
+                        line_str = line.decode("utf-8", errors="replace").rstrip("\n")
+                        stderr_lines.append(line_str)
+                        # 实时打印ffmpeg进度信息（CLI会将其显示为灰色文本）
+                        if line_str:
+                            print(line_str, flush=True)
+                except Exception:
+                    pass
+
+            # 启动stderr读取线程
+            stderr_thread = threading.Thread(target=read_stderr, daemon=True)
+            stderr_thread.start()
+
+            # 读取stdout（音频数据）并计算哈希
+            sha256_obj = hashlib.sha256()
+            while True:
+                chunk = process.stdout.read(4096)
+                if not chunk:
+                    break
+                stdout_chunks.append(chunk)
+                sha256_obj.update(chunk)
+
+            # 等待进程结束
+            returncode = process.wait(timeout=30)
+
+            # 等待stderr线程结束
+            stderr_thread.join(timeout=5)
+
+            if returncode != 0:
+                stderr_data = "".join(stderr_lines)
+                raise subprocess.CalledProcessError(returncode, cmd, stderr=stderr_data)
+            else:
+                # 计算哈希值
+                hexdigest = sha256_obj.hexdigest()
+                oid = f"sha256:{hexdigest}"
+
         except subprocess.TimeoutExpired:
+            if process:
+                process.terminate()
+                process.wait(timeout=5)
             raise RuntimeError("FFmpeg计算哈希超时（30秒）")
         except subprocess.CalledProcessError as e:
-            stderr_data = e.stderr.decode() if e.stderr else "Unknown error"
+            stderr_data = e.stderr if isinstance(e.stderr, str) else "Unknown error"
             raise RuntimeError(f"FFmpeg failed to calculate hash: {stderr_data}")
-
-        sha256_obj = hashlib.sha256()
-        sha256_obj.update(result.stdout)
-        hexdigest = sha256_obj.hexdigest()
-        oid = f"sha256:{hexdigest}"
 
         if record_tooling:
             EventEmitter.item_event(oid, "hashed", f"audio {path.name}")

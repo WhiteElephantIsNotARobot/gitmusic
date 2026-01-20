@@ -2,6 +2,7 @@ import os
 import subprocess
 import tempfile
 import hashlib
+import threading
 from pathlib import Path
 from typing import Optional, Tuple, List, Dict, Any
 from mutagen.mp3 import MP3
@@ -47,14 +48,59 @@ class AudioIO:
 
         cmd = ["ffmpeg", "-i", str(src_path)] + params + [str(out_path)]
 
+        process = None
         try:
-            subprocess.run(cmd, check=True, capture_output=True)
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                bufsize=1,
+                universal_newlines=False,
+            )
+
+            stderr_lines = []
+
+            # 读取stderr的辅助函数（实时打印进度）
+            def read_stderr():
+                try:
+                    while True:
+                        line = process.stderr.readline()
+                        if not line:
+                            break
+                        # 解码为字符串并移除尾部换行符
+                        line_str = line.decode("utf-8", errors="replace").rstrip("\n")
+                        stderr_lines.append(line_str)
+                        # 实时打印ffmpeg进度信息（CLI会将其显示为灰色文本）
+                        if line_str:
+                            print(line_str, flush=True)
+                except Exception:
+                    pass
+
+            # 启动stderr读取线程
+            stderr_thread = threading.Thread(target=read_stderr, daemon=True)
+            stderr_thread.start()
+
+            # 等待进程结束
+            returncode = process.wait(timeout=300)  # 5分钟超时
+
+            # 等待stderr线程结束
+            stderr_thread.join(timeout=5)
+
+            if returncode != 0:
+                stderr_data = "".join(stderr_lines)
+                raise subprocess.CalledProcessError(returncode, cmd, stderr=stderr_data)
+
             EventEmitter.item_event(str(src_path), "extracted", f"to {out_path}")
             return out_path
+
+        except subprocess.TimeoutExpired:
+            if process:
+                process.terminate()
+                process.wait(timeout=5)
+            raise RuntimeError("FFmpeg提取音频流超时（5分钟）")
         except subprocess.CalledProcessError as e:
-            EventEmitter.error(
-                f"Failed to extract audio stream: {e.stderr.decode() if e.stderr else str(e)}"
-            )
+            stderr_data = e.stderr if isinstance(e.stderr, str) else "Unknown error"
+            EventEmitter.error(f"Failed to extract audio stream: {stderr_data}")
             raise
 
     @staticmethod
