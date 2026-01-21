@@ -1479,6 +1479,26 @@ class GitMusicCLI:
 def main():
     """主函数"""
     import argparse
+    import sys
+    import os
+
+    # 修复控制台编码问题，确保在bash等环境中中文正常显示
+    # 设置环境变量作为第一层保障
+    os.environ['PYTHONIOENCODING'] = 'utf-8'
+
+    try:
+        # Python 3.7+ 支持reconfigure方法，直接设置stdout/stderr编码
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except (AttributeError, Exception):
+        # 对于不支持reconfigure的Python版本，使用TextIOWrapper包装
+        try:
+            import io
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+        except Exception:
+            # 如果所有方法都失败，至少环境变量应该能起作用
+            pass
 
     parser = argparse.ArgumentParser(description="GitMusic CLI")
     parser.add_argument(
