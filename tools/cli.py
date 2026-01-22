@@ -16,6 +16,7 @@ from rich.progress import (
     BarColumn,
     TextColumn,
     TimeElapsedColumn,
+    TimeRemainingColumn,
 )
 from rich.table import Table
 from rich.panel import Panel
@@ -81,6 +82,7 @@ class StepContext:
         object_store: ObjectStore,
         lock_manager: LockManager,
         context: Optional["Context"] = None,
+        log_only: bool = False,
     ):
         self.command_name = command_name
         self.args = args
@@ -89,6 +91,7 @@ class StepContext:
         self.object_store = object_store
         self.lock_manager = lock_manager
         self.context = context
+        self.log_only = log_only
         self.artifacts = {}
         self.start_time = time.time()
 
@@ -100,7 +103,7 @@ class StepContext:
 class GitMusicCLI:
     """GitMusic CLI 主类，支持步骤函数和流式管道"""
 
-    def __init__(self, config_path: Optional[str] = None):
+    def __init__(self, config_path: Optional[str] = None, log_only: bool = False):
         self.repo_root = Path(__file__).parent.parent
 
         # 确定项目根目录（保持向后兼容）
@@ -127,7 +130,7 @@ class GitMusicCLI:
             self.context.metadata_file = self.repo_root / "metadata.jsonl"
 
         # 日志配置
-        self.log_only = False  # 默认关闭，由命令行参数设置
+        self.log_only = log_only
         from libgitmusic.events import EventEmitter
 
         EventEmitter.setup_logging(
@@ -242,7 +245,9 @@ class GitMusicCLI:
             BarColumn(),
             TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
             TextColumn("({task.completed}/{task.total})"),
+            TextColumn("[progress.speed]{task.speed:>6.1f} it/s"),
             TimeElapsedColumn(),
+            TimeRemainingColumn(),
             console=console,
         ) as progress:
             task = None
@@ -269,10 +274,36 @@ class GitMusicCLI:
                     elif etype == "batch_progress" and task is not None:
                         progress.update(task, completed=event.get("processed", 0))
                     elif etype == "item_event":
-                        if task is None:  # 仅在非进度条模式下显示
-                            status = event.get("status", "").upper()
-                            item_id = event.get("id", "")
-                            progress.console.print(f"[dim] {status}: {item_id}[/dim]")
+                        # 规范item_event输出格式：时间 [状态] 文件 - 操作
+                        timestamp = event.get("ts", "")
+                        if timestamp:
+                            # 提取时间部分（HH:MM:SS）
+                            try:
+                                time_part = timestamp.split("T")[1].split(".")[0][:8]
+                            except:
+                                time_part = timestamp[:8] if len(timestamp) >= 8 else timestamp
+                        else:
+                            time_part = datetime.now().strftime("%H:%M:%S")
+
+                        status = event.get("status", "").upper()
+                        item_id = event.get("id", "")
+                        operation = event.get("operation", "")
+
+                        # 根据状态设置颜色
+                        if status == "OK":
+                            status_color = "[green]"
+                        elif status == "WARN":
+                            status_color = "[yellow]"
+                        elif status == "ERROR":
+                            status_color = "[red]"
+                        else:
+                            status_color = "[white]"
+
+                        # 格式化输出
+                        if operation:
+                            progress.console.print(f"{time_part} {status_color}[{status}][/] {item_id} — {operation}")
+                        else:
+                            progress.console.print(f"{time_part} {status_color}[{status}][/] {item_id}")
                     elif etype == "log":
                         level = event.get("level", "info")
                         msg = event.get("message", "")
@@ -389,6 +420,34 @@ class GitMusicCLI:
 
             # 如果是预览模式，输出结果但不执行
             if preview:
+                # 显示publish预览表格（仅在非log-only模式）
+                if items and not ctx.log_only:
+                    table = Table(title="Publish 预览", show_lines=True)
+                    table.add_column("#", style="cyan", justify="right")
+                    table.add_column("change", style="yellow")
+                    table.add_column("title", style="white")
+                    table.add_column("artists", style="magenta")
+                    table.add_column("diff", style="dim")
+                    table.add_column("summary", style="green")
+
+                    for i, item in enumerate(items, 1):
+                        change = item.get("change", "new")
+                        title = item.get("title", "")[:30]
+                        artists = ", ".join(item.get("artists", []))[:30]
+                        diff = item.get("diff", "")[:20]
+                        summary = item.get("summary", "")[:30]
+
+                        table.add_row(
+                            str(i),
+                            change,
+                            title,
+                            artists,
+                            diff,
+                            summary
+                        )
+
+                    console.print(table)
+
                 # 转换items为可序列化格式
                 def make_serializable(obj):
                     if isinstance(obj, Path):
@@ -656,6 +715,26 @@ class GitMusicCLI:
                 audio_oids=audio_oids,
             )
 
+            # 显示verify报告表格（这里需要从verify_cmd获取详细结果）
+            # 暂时显示摘要信息（仅在非log-only模式）
+            if not ctx.log_only:
+                table = Table(title="Verify 报告", show_lines=True)
+                table.add_column("file", style="white")
+                table.add_column("expected_oid", style="dim")
+                table.add_column("actual_oid", style="dim")
+                table.add_column("status", style="green")
+
+                # 这里应该从实际验证结果中获取详细信息
+                # 暂时显示模式信息
+                table.add_row(
+                    f"{mode} verification",
+                    "-",
+                    "-",
+                    "completed" if exit_code == 0 else "failed"
+                )
+
+                console.print(table)
+
             return iter([])
 
         # git提交步骤 - 提交元数据更改
@@ -866,6 +945,36 @@ class GitMusicCLI:
                 "release_dir": str(release_dir),
                 "mode": mode,
             }
+
+            # 显示release结果表格（仅在非log-only模式）
+            if success_count > 0 and not ctx.log_only:
+                table = Table(title="Release 结果", show_lines=True)
+                table.add_column("#", style="cyan", justify="right")
+                table.add_column("file", style="white")
+                table.add_column("status", style="green")
+                table.add_column("duration", style="dim")
+                table.add_column("artifact", style="magenta")
+
+                # 这里应该从实际执行结果中获取详细信息
+                # 暂时显示摘要信息
+                table.add_row(
+                    "1",
+                    f"{success_count} files",
+                    "success" if success_count == total_count else "partial",
+                    f"{ctx.elapsed():.1f}s",
+                    str(release_dir)
+                )
+
+                if total_count - success_count > 0:
+                    table.add_row(
+                        "2",
+                        f"{total_count - success_count} files",
+                        "failed",
+                        "-",
+                        "-"
+                    )
+
+                console.print(table)
 
             if success_count == total_count:
                 EventEmitter.result(
@@ -1232,6 +1341,15 @@ class GitMusicCLI:
             if "phase_start_times" not in self.summary_stats:
                 self.summary_stats["phase_start_times"] = {}
             self.summary_stats["phase_start_times"][phase] = time.time()
+
+            # 显示Header行（符合视觉规范）
+            current_time = datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
+            total_items = event.get("total_items", 0)
+            # 获取当前命令名（从事件或上下文）
+            command_name = event.get("command", self.summary_stats.get("current_command", "unknown"))
+            # 仅在非log-only模式显示Header行
+            if not self.log_only:
+                console.print(f"[bold cyan]{current_time} | {command_name} | phase={phase} | total={total_items} | status=running[/bold cyan]")
         elif etype == "batch_progress":
             # 更新进度
             pass
@@ -1253,17 +1371,33 @@ class GitMusicCLI:
         # 计算速率
         rate = items_processed / elapsed if elapsed > 0 else 0
 
-        table = Table(title="执行摘要", show_header=False, show_lines=True)
-        table.add_column("指标", style="cyan")
-        table.add_column("值", style="green")
+        # 获取日志文件信息
+        logfile_info = "未记录"
+        try:
+            from libgitmusic.events import EventEmitter
+            if EventEmitter._log_file is not None:
+                logfile_path = EventEmitter._log_file.name
+                logfile_info = str(Path(logfile_path).relative_to(self.project_root))
+        except:
+            pass
 
-        table.add_row("处理项数", str(items_processed))
-        table.add_row("错误数", str(errors))
-        table.add_row("警告数", str(warnings))
-        table.add_row("耗时（秒）", f"{elapsed:.2f}")
-        table.add_row("速率（项/秒）", f"{rate:.2f}")
+        # 构建摘要内容
+        summary_content = f"""处理项数: {items_processed}
+错误数: {errors}
+警告数: {warnings}
+耗时: {elapsed:.2f}秒
+速率: {rate:.2f}项/秒
+日志文件: {logfile_info}"""
 
-        console.print(table)
+        # 使用rich.Panel显示摘要
+        summary_panel = Panel(
+            summary_content,
+            title="执行摘要",
+            border_style="green",
+            padding=(1, 2)
+        )
+
+        console.print(summary_panel)
 
         # 显示最近事件（如果有）
         if self.recent_events:
@@ -1311,6 +1445,14 @@ class GitMusicCLI:
         # 记录开始时间
         self.summary_stats["start_time"] = time.time()
 
+        # 显示Header行（符合视觉规范，仅在非log-only模式）
+        if not self.log_only:
+            current_time = datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
+            console.print(f"[bold cyan]{current_time} | {name} | phase=start | total=0 | status=running[/bold cyan]")
+
+        # 保存当前命令名到统计信息中，供事件处理使用
+        self.summary_stats["current_command"] = name
+
         # 处理帮助请求
         if "--help" in args or "-h" in args:
             self.show_command_help(name)
@@ -1333,6 +1475,7 @@ class GitMusicCLI:
             object_store=self.object_store,
             lock_manager=self.lock_manager,
             context=self.context,
+            log_only=self.log_only,
         )
 
         try:
@@ -1344,7 +1487,8 @@ class GitMusicCLI:
 
             # 执行步骤链
             if cmd.steps:
-                console.print(f"[bold cyan]执行命令: {name}[/bold cyan]")
+                if not self.log_only:
+                    console.print(f"[bold cyan]执行命令: {name}[/bold cyan]")
 
                 # 如果有多个步骤，按顺序执行管道
                 if len(cmd.steps) > 1:
@@ -1371,18 +1515,23 @@ class GitMusicCLI:
                     # 单个步骤
                     cmd.steps[0](ctx, None)
 
-                console.print(f"[green]命令执行完成: {name}[/green]")
+                if not self.log_only:
+                    console.print(f"[green]命令执行完成: {name}[/green]")
             else:
-                console.print(f"[yellow]命令 {name} 没有定义步骤[/yellow]")
+                if not self.log_only:
+                    console.print(f"[yellow]命令 {name} 没有定义步骤[/yellow]")
 
         except KeyboardInterrupt:
-            console.print("[yellow]命令被用户中断[/yellow]")
+            if not self.log_only:
+                console.print("[yellow]命令被用户中断[/yellow]")
             EventEmitter.error("cancelled by user", {"command": name})
         except Exception as e:
-            console.print(f"[red]命令执行错误: {str(e)}[/red]")
+            if not self.log_only:
+                console.print(f"[red]命令执行错误: {str(e)}[/red]")
         finally:
-            # 显示摘要
-            self._display_summary()
+            # 显示摘要（仅在非log-only模式）
+            if not self.log_only:
+                self._display_summary()
             # 注销事件监听器
             from libgitmusic.events import EventEmitter
 
@@ -1510,16 +1659,13 @@ def main():
 
     args = parser.parse_args()
 
-    cli = GitMusicCLI()
+    # 创建CLI实例，传递log_only参数
+    cli = GitMusicCLI(log_only=args.log_only)
 
-    # 覆盖日志配置（如果命令行指定）
+    # 覆盖日志目录配置（如果命令行指定）
     if args.logs_dir:
         cli.context.logs_dir = Path(args.logs_dir).resolve()
-    if args.log_only:
-        cli.log_only = True
-    if args.logs_dir or args.log_only:
         from libgitmusic.events import EventEmitter
-
         EventEmitter.setup_logging(logs_dir=cli.context.logs_dir, log_only=cli.log_only)
 
     if args.command:
