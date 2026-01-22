@@ -6,6 +6,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Optional, Iterator
 from .events import EventEmitter
+from .exceptions import ValidationError
+from .results import VerifyResult
 
 
 class ValidationError(ValueError):
@@ -272,46 +274,86 @@ class MetadataManager:
                 dup_info += f" 等 {len(duplicates)} 个重复"
             raise ValidationError(f"发现重复的 audio_oid: {dup_info}")
 
-    def update_entry(self, audio_oid: str, updates: Dict):
-        """更新特定条目"""
+    def update_entry(self, audio_oid: str, updates: Dict) -> VerifyResult:
+        """更新特定条目并返回验证结果
+
+        Args:
+            audio_oid: 音频对象ID
+            updates: 更新内容字典
+
+        Returns:
+            VerifyResult: 验证结果
+        """
         # 确保updates中的audio_oid与参数一致（如果提供了）
         if "audio_oid" in updates and updates["audio_oid"] != audio_oid:
-            raise ValidationError(
-                f"audio_oid 不匹配: 参数为 {audio_oid}, updates 中为 {updates['audio_oid']}"
+            error_msg = f"audio_oid 不匹配: 参数为 {audio_oid}, updates 中为 {updates['audio_oid']}"
+            EventEmitter.error(
+                f"更新条目校验失败 (audio_oid: {audio_oid}): {error_msg}",
+                context={"audio_oid": audio_oid, "updates": updates},
+            )
+            return VerifyResult(
+                success=False,
+                message=error_msg,
+                error=ValidationError(error_msg)
             )
 
-        entries = self.load_all()
-        found = False
-        for i, entry in enumerate(entries):
-            if entry.get("audio_oid") == audio_oid:
-                # 合并更新并校验
-                merged_entry = entry.copy()
-                merged_entry.update(updates)
+        try:
+            entries = self.load_all()
+            found = False
+            for i, entry in enumerate(entries):
+                if entry.get("audio_oid") == audio_oid:
+                    # 合并更新并校验
+                    merged_entry = entry.copy()
+                    merged_entry.update(updates)
+                    try:
+                        self.validate_entry(merged_entry)
+                    except ValidationError as e:
+                        EventEmitter.error(
+                            f"更新条目校验失败 (audio_oid: {audio_oid}): {str(e)}",
+                            context={"audio_oid": audio_oid, "updates": updates},
+                        )
+                        return VerifyResult(
+                            success=False,
+                            message=str(e),
+                            error=e
+                        )
+                    entries[i] = merged_entry
+                    found = True
+                    break
+
+            if not found:
+                # 新条目，确保包含audio_oid
+                new_entry = updates.copy()
+                if "audio_oid" not in new_entry:
+                    new_entry["audio_oid"] = audio_oid
                 try:
-                    self.validate_entry(merged_entry)
+                    self.validate_entry(new_entry)
                 except ValidationError as e:
                     EventEmitter.error(
-                        f"更新条目校验失败 (audio_oid: {audio_oid}): {str(e)}",
+                        f"新条目校验失败 (audio_oid: {audio_oid}): {str(e)}",
                         context={"audio_oid": audio_oid, "updates": updates},
                     )
-                    raise
-                entries[i] = merged_entry
-                found = True
-                break
+                    return VerifyResult(
+                        success=False,
+                        message=str(e),
+                        error=e
+                    )
+                entries.append(new_entry)
 
-        if not found:
-            # 新条目，确保包含audio_oid
-            new_entry = updates.copy()
-            if "audio_oid" not in new_entry:
-                new_entry["audio_oid"] = audio_oid
-            try:
-                self.validate_entry(new_entry)
-            except ValidationError as e:
-                EventEmitter.error(
-                    f"新条目校验失败 (audio_oid: {audio_oid}): {str(e)}",
-                    context={"audio_oid": audio_oid, "updates": updates},
-                )
-                raise
-            entries.append(new_entry)
+            self.save_all(entries)
 
-        self.save_all(entries)
+            return VerifyResult(
+                success=True,
+                message=f"成功更新/添加条目 (audio_oid: {audio_oid})"
+            )
+
+        except Exception as e:
+            EventEmitter.error(
+                f"更新条目失败 (audio_oid: {audio_oid}): {str(e)}",
+                context={"audio_oid": audio_oid, "updates": updates},
+            )
+            return VerifyResult(
+                success=False,
+                message=str(e),
+                error=ValidationError(str(e))
+            )

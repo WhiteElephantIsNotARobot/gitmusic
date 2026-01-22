@@ -5,6 +5,8 @@ import time
 from pathlib import Path
 from typing import List, Tuple, Optional
 from .events import EventEmitter
+from .results import RemoteResult
+from .exceptions import TransportError
 
 
 class TransportAdapter:
@@ -89,15 +91,26 @@ class TransportAdapter:
             EventEmitter.log("error", f"Timeout getting remote hash for {remote_path}")
             raise
 
-    def upload(self, local_path: Path, remote_subpath: str):
+    def upload(self, local_path: Path, remote_subpath: str) -> RemoteResult:
         """上传文件到远端（原子操作），包含远端SHA256校验和重试机制"""
         remote_final_path = f"{self.remote_data_root}/{remote_subpath}"
         remote_tmp_path = f"{remote_final_path}.tmp"
 
         # 计算本地哈希
-        with open(local_path, "rb") as f:
-            local_hash = hashlib.sha256(f.read()).hexdigest()
-        EventEmitter.log("debug", f"Local SHA256: {local_hash}")
+        try:
+            with open(local_path, "rb") as f:
+                local_hash = hashlib.sha256(f.read()).hexdigest()
+            EventEmitter.log("debug", f"Local SHA256: {local_hash}")
+        except Exception as e:
+            EventEmitter.error(
+                f"Failed to compute local hash: {str(e)}",
+                {"file": str(local_path)}
+            )
+            return RemoteResult(
+                success=False,
+                message=f"Failed to compute local hash: {str(e)}",
+                error=TransportError(f"Failed to compute local hash: {str(e)}")
+            )
 
         # 幂等性检查：远端文件是否存在且哈希匹配
         remote_hash = self._get_remote_hash(remote_final_path)
@@ -110,7 +123,11 @@ class TransportAdapter:
                 EventEmitter.item_event(
                     str(local_path), "skipped", f"remote hash matches"
                 )
-                return
+                return RemoteResult(
+                    success=True,
+                    message="Remote file already exists with matching hash",
+                    remote_path=remote_subpath
+                )
             else:
                 EventEmitter.log(
                     "warn",
@@ -119,9 +136,22 @@ class TransportAdapter:
 
         # 确保远端目录存在
         remote_dir = os.path.dirname(remote_final_path).replace("\\", "/")
-        subprocess.run(
-            ["ssh", f"{self.user}@{self.host}", f"mkdir -p {remote_dir}"], check=True
-        )
+        try:
+            subprocess.run(
+                ["ssh", f"{self.user}@{self.host}", f"mkdir -p {remote_dir}"],
+                check=True,
+                timeout=self.timeout
+            )
+        except Exception as e:
+            EventEmitter.error(
+                f"Failed to create remote directory: {str(e)}",
+                {"directory": remote_dir}
+            )
+            return RemoteResult(
+                success=False,
+                message=f"Failed to create remote directory: {str(e)}",
+                error=TransportError(f"Failed to create remote directory: {str(e)}")
+            )
 
         # 带重试的上传循环
         last_error = None
@@ -165,7 +195,11 @@ class TransportAdapter:
                     str(local_path), "uploaded", f"verified {local_hash[:8]}"
                 )
                 EventEmitter.log("info", f"Upload successful: {remote_subpath}")
-                return
+                return RemoteResult(
+                    success=True,
+                    message="Upload successful",
+                    remote_path=remote_subpath
+                )
 
             except (
                 subprocess.CalledProcessError,
@@ -185,7 +219,12 @@ class TransportAdapter:
                         f"Upload failed after {self.retries + 1} attempts: {str(e)}",
                         {"file": str(local_path)},
                     )
-                    raise
+                    return RemoteResult(
+                        success=False,
+                        message=f"Upload failed after {self.retries + 1} attempts: {str(e)}",
+                        error=TransportError(f"Upload failed after {self.retries + 1} attempts: {str(e)}"),
+                        remote_path=remote_subpath
+                    )
 
     def download(self, remote_subpath: str, local_path: Path):
         """从远端下载文件（原子操作）"""

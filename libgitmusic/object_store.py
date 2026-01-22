@@ -3,6 +3,8 @@ import shutil
 from pathlib import Path
 from typing import Optional, Tuple
 from .events import EventEmitter
+from .results import StoreResult
+from .exceptions import IOError
 
 
 class ObjectStore:
@@ -48,7 +50,7 @@ class ObjectStore:
             # 实际存储结构: objects/sha256/前两个字符/完整哈希.mp3
             return self.objects_dir / "sha256" / hexdigest[:2] / f"{hexdigest}.mp3"
 
-    def store_audio(self, temp_path: Path, compute_hash: bool = True) -> str:
+    def store_audio(self, temp_path: Path, compute_hash: bool = True) -> StoreResult:
         """
         存储音频文件并返回对象ID
 
@@ -57,33 +59,52 @@ class ObjectStore:
             compute_hash: 是否计算哈希（如果已知可传入False）
 
         Returns:
-            音频对象ID (sha256:hexdigest)
+            StoreResult: 存储结果对象
         """
-        if compute_hash:
-            # 计算音频哈希（使用AudioIO或HashUtils）
+        try:
+            if compute_hash:
+                # 计算音频哈希（使用AudioIO或HashUtils）
+                from .audio import AudioIO
+
+                oid = AudioIO.get_audio_hash(temp_path)
+            else:
+                # 假设文件名已经是哈希值
+                oid = f"sha256:{temp_path.stem}"
+
+            target_path = self._get_object_path(oid)
+
+            if target_path.exists():
+                EventEmitter.log("debug", f"Audio object already exists: {oid}")
+                return StoreResult(
+                    success=True,
+                    message="Audio object already exists",
+                    oid=oid
+                )
+
+            # 原子写入
             from .audio import AudioIO
 
-            oid = AudioIO.get_audio_hash(temp_path)
-        else:
-            # 假设文件名已经是哈希值
-            oid = f"sha256:{temp_path.stem}"
+            with open(temp_path, "rb") as f:
+                AudioIO.atomic_write(f.read(), target_path)
 
-        target_path = self._get_object_path(oid)
+            EventEmitter.item_event(oid, "stored", "audio")
+            return StoreResult(
+                success=True,
+                message="Audio stored successfully",
+                oid=oid
+            )
+        except Exception as e:
+            EventEmitter.error(
+                f"Failed to store audio: {str(e)}",
+                {"file": str(temp_path)}
+            )
+            return StoreResult(
+                success=False,
+                message=str(e),
+                error=IOError(str(e))
+            )
 
-        if target_path.exists():
-            EventEmitter.log("debug", f"Audio object already exists: {oid}")
-            return oid
-
-        # 原子写入
-        from .audio import AudioIO
-
-        with open(temp_path, "rb") as f:
-            AudioIO.atomic_write(f.read(), target_path)
-
-        EventEmitter.item_event(oid, "stored", "audio")
-        return oid
-
-    def store_cover(self, cover_data: bytes, compute_hash: bool = True) -> str:
+    def store_cover(self, cover_data: bytes, compute_hash: bool = True) -> StoreResult:
         """
         存储封面图片并返回对象ID
 
@@ -92,28 +113,47 @@ class ObjectStore:
             compute_hash: 是否计算哈希
 
         Returns:
-            封面对象ID (sha256:hexdigest)
+            StoreResult: 存储结果对象
         """
-        if compute_hash:
-            hexdigest = hashlib.sha256(cover_data).hexdigest()
-            oid = f"sha256:{hexdigest}"
-        else:
-            # 假设已知哈希
-            raise ValueError("Must compute hash for cover data")
+        try:
+            if compute_hash:
+                hexdigest = hashlib.sha256(cover_data).hexdigest()
+                oid = f"sha256:{hexdigest}"
+            else:
+                # 假设已知哈希
+                raise ValueError("Must compute hash for cover data")
 
-        target_path = self._get_object_path(oid + ".jpg")
+            target_path = self._get_object_path(oid + ".jpg")
 
-        if target_path.exists():
-            EventEmitter.log("debug", f"Cover object already exists: {oid}")
-            return oid
+            if target_path.exists():
+                EventEmitter.log("debug", f"Cover object already exists: {oid}")
+                return StoreResult(
+                    success=True,
+                    message="Cover object already exists",
+                    oid=oid
+                )
 
-        # 原子写入
-        from .audio import AudioIO
+            # 原子写入
+            from .audio import AudioIO
 
-        AudioIO.atomic_write(cover_data, target_path)
+            AudioIO.atomic_write(cover_data, target_path)
 
-        EventEmitter.item_event(oid, "stored", "cover")
-        return oid
+            EventEmitter.item_event(oid, "stored", "cover")
+            return StoreResult(
+                success=True,
+                message="Cover stored successfully",
+                oid=oid
+            )
+        except Exception as e:
+            EventEmitter.error(
+                f"Failed to store cover: {str(e)}",
+                {"data_length": len(cover_data) if cover_data else 0}
+            )
+            return StoreResult(
+                success=False,
+                message=str(e),
+                error=IOError(str(e))
+            )
 
     def get_audio_path(self, oid: str) -> Optional[Path]:
         """获取音频对象文件路径，如果不存在则返回None"""

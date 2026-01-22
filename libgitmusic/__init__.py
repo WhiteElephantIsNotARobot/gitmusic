@@ -18,6 +18,23 @@ from .git import (
     git_commit_and_push,
 )
 from .context import Context, create_context
+from .exceptions import (
+    GitMusicError,
+    ValidationError,
+    TransportError,
+    IOError,
+    LockError,
+    ConfigurationError,
+    CommandError,
+)
+from .results import (
+    Result,
+    StoreResult,
+    RemoteResult,
+    VerifyResult,
+    CleanupResult,
+    ReleaseResult,
+)
 
 __all__ = [
     "EventEmitter",
@@ -35,4 +52,17 @@ __all__ = [
     "git_commit_and_push",
     "Context",
     "create_context",
+    "GitMusicError",
+    "ValidationError",
+    "TransportError",
+    "IOError",
+    "LockError",
+    "ConfigurationError",
+    "CommandError",
+    "Result",
+    "StoreResult",
+    "RemoteResult",
+    "VerifyResult",
+    "CleanupResult",
+    "ReleaseResult",
 ]
