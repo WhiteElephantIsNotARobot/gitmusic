@@ -281,7 +281,9 @@ class GitMusicCLI:
                             try:
                                 time_part = timestamp.split("T")[1].split(".")[0][:8]
                             except:
-                                time_part = timestamp[:8] if len(timestamp) >= 8 else timestamp
+                                time_part = (
+                                    timestamp[:8] if len(timestamp) >= 8 else timestamp
+                                )
                         else:
                             time_part = datetime.now().strftime("%H:%M:%S")
 
@@ -301,9 +303,13 @@ class GitMusicCLI:
 
                         # 格式化输出
                         if operation:
-                            progress.console.print(f"{time_part} {status_color}[{status}][/] {item_id} — {operation}")
+                            progress.console.print(
+                                f"{time_part} {status_color}[{status}][/] {item_id} — {operation}"
+                            )
                         else:
-                            progress.console.print(f"{time_part} {status_color}[{status}][/] {item_id}")
+                            progress.console.print(
+                                f"{time_part} {status_color}[{status}][/] {item_id}"
+                            )
                     elif etype == "log":
                         level = event.get("level", "info")
                         msg = event.get("message", "")
@@ -415,8 +421,10 @@ class GitMusicCLI:
             )
 
             if error_msg:
-                EventEmitter.error(f"扫描失败: {error_msg}")
-                return iter([])
+                error_detail = {"error_type": "scan_failed", "message": error_msg}
+                EventEmitter.error(f"扫描失败: {error_msg}", error_detail)
+                # publish命令使用stop策略，抛出异常
+                raise RuntimeError(f"扫描失败: {error_msg}")
 
             # 如果是预览模式，输出结果但不执行
             if preview:
@@ -437,14 +445,7 @@ class GitMusicCLI:
                         diff = item.get("diff", "")[:20]
                         summary = item.get("summary", "")[:30]
 
-                        table.add_row(
-                            str(i),
-                            change,
-                            title,
-                            artists,
-                            diff,
-                            summary
-                        )
+                        table.add_row(str(i), change, title, artists, diff, summary)
 
                     console.print(table)
 
@@ -491,11 +492,17 @@ class GitMusicCLI:
                 EventEmitter.item_event(filename, "processing", "")
 
             # 调用库函数
-            publish_cmd.execute_publish(
-                ctx.metadata_mgr,
-                items,
-                progress_callback=progress_callback,
-            )
+            try:
+                publish_cmd.execute_publish(
+                    ctx.metadata_mgr,
+                    items,
+                    progress_callback=progress_callback,
+                )
+            except Exception as e:
+                error_msg = f"处理失败: {str(e)}"
+                EventEmitter.error(error_msg, {"exception": str(e), "items_count": len(items)})
+                # publish命令使用stop策略，抛出异常
+                raise RuntimeError(error_msg) from e
 
             # 存储处理过的audio_oid供后续步骤使用
             ctx.artifacts["processed_audio_oids"] = [
@@ -513,6 +520,8 @@ class GitMusicCLI:
             missing_fields = []
             limit = 0
             force = False
+            search_field = None
+            line = None
 
             # 解析参数
             i = 0
@@ -531,6 +540,12 @@ class GitMusicCLI:
                     limit = int(args[i + 1])
                     ctx.artifacts["limit"] = limit
                     i += 2
+                elif args[i] in ["--search-field", "-s"] and i + 1 < len(args):
+                    search_field = args[i + 1]
+                    i += 2
+                elif args[i] in ["--line", "-l"] and i + 1 < len(args):
+                    line = args[i + 1]
+                    i += 2
                 else:
                     i += 1
 
@@ -540,6 +555,8 @@ class GitMusicCLI:
                 query=query,
                 missing_fields=missing_fields if missing_fields else None,
                 limit=limit,
+                search_field=search_field,
+                line=line,
             )
 
             EventEmitter.phase_start("checkout_filter", total_items=len(filtered))
@@ -684,6 +701,7 @@ class GitMusicCLI:
             # 解析参数
             mode = "local"
             custom_path = None
+            delete = False
             args = ctx.args
 
             i = 0
@@ -694,6 +712,9 @@ class GitMusicCLI:
                 elif args[i] == "--path" and i + 1 < len(args):
                     custom_path = Path(args[i + 1])
                     i += 2
+                elif args[i] == "--delete":
+                    delete = True
+                    i += 1
                 else:
                     i += 1
 
@@ -706,14 +727,21 @@ class GitMusicCLI:
             audio_oids = ctx.artifacts.get("processed_audio_oids")
 
             # 调用库函数
-            exit_code = verify_cmd.verify_logic(
-                cache_root=cache_root,
-                metadata_file=metadata_file,
-                mode=mode,
-                custom_path=custom_path,
-                release_dir=release_dir,
-                audio_oids=audio_oids,
-            )
+            try:
+                exit_code = verify_cmd.verify_logic(
+                    cache_root=cache_root,
+                    metadata_file=metadata_file,
+                    mode=mode,
+                    custom_path=custom_path,
+                    release_dir=release_dir,
+                    audio_oids=audio_oids,
+                    delete=delete,
+                )
+            except Exception as e:
+                error_msg = f"验证逻辑异常: {str(e)}"
+                EventEmitter.error(error_msg, {"exception": str(e), "mode": mode})
+                # verify命令使用continue策略，记录错误但继续执行
+                exit_code = 1  # 设置失败状态码但继续处理
 
             # 显示verify报告表格（这里需要从verify_cmd获取详细结果）
             # 暂时显示摘要信息（仅在非log-only模式）
@@ -730,7 +758,7 @@ class GitMusicCLI:
                     f"{mode} verification",
                     "-",
                     "-",
-                    "completed" if exit_code == 0 else "failed"
+                    "completed" if exit_code == 0 else "failed (continuing)",
                 )
 
                 console.print(table)
@@ -758,18 +786,27 @@ class GitMusicCLI:
                 commit_msg = f"update: {count} items"
 
             # 使用git库提交并推送
-            success = git_commit_and_push(
-                repo_root=repo_root,
-                message=commit_msg,
-                paths=[str(metadata_file.relative_to(repo_root))],
-                remote="origin",
-                branch="main",
-            )
+            try:
+                success = git_commit_and_push(
+                    repo_root=repo_root,
+                    message=commit_msg,
+                    paths=[str(metadata_file.relative_to(repo_root))],
+                    remote="origin",
+                    branch="main",
+                )
 
-            if success:
-                EventEmitter.result("ok", message=f"成功提交并推送 {count} 个更改")
-            else:
-                EventEmitter.result("error", message="Git提交推送失败")
+                if success:
+                    EventEmitter.result("ok", message=f"成功提交并推送 {count} 个更改")
+                else:
+                    error_msg = "Git提交推送失败"
+                    EventEmitter.error(error_msg, {"operation": "git_commit_and_push", "count": count})
+                    # commit步骤在publish命令中使用，publish使用stop策略，抛出异常
+                    raise RuntimeError(error_msg)
+            except Exception as e:
+                error_msg = f"Git提交推送异常: {str(e)}"
+                EventEmitter.error(error_msg, {"exception": str(e), "count": count})
+                # commit步骤在publish命令中使用，publish使用stop策略，抛出异常
+                raise RuntimeError(error_msg) from e
 
             return iter([])
 
@@ -813,16 +850,22 @@ class GitMusicCLI:
             remote_data_root = transport_cfg.get("remote_data_root", "/srv/music/data")
 
             # 调用库函数
-            exit_code = cleanup_cmd.cleanup_logic(
-                metadata_file=metadata_file,
-                cache_root=cache_root,
-                mode=mode,
-                confirm=confirm,
-                dry_run=dry_run,
-                remote_user=remote_user,
-                remote_host=remote_host,
-                remote_data_root=remote_data_root,
-            )
+            try:
+                exit_code = cleanup_cmd.cleanup_logic(
+                    metadata_file=metadata_file,
+                    cache_root=cache_root,
+                    mode=mode,
+                    confirm=confirm,
+                    dry_run=dry_run,
+                    remote_user=remote_user,
+                    remote_host=remote_host,
+                    remote_data_root=remote_data_root,
+                )
+            except Exception as e:
+                error_msg = f"清理逻辑异常: {str(e)}"
+                EventEmitter.error(error_msg, {"exception": str(e), "mode": mode})
+                # cleanup命令使用stop策略，抛出异常
+                raise RuntimeError(error_msg) from e
 
             return iter([])
 
@@ -837,6 +880,8 @@ class GitMusicCLI:
             line_filter = None
             hash_filter = None
             search_filter = None
+            force = False
+            workers = 1
             args = ctx.args
 
             i = 0
@@ -862,35 +907,66 @@ class GitMusicCLI:
                 elif args[i] == "--search" and i + 1 < len(args):
                     search_filter = args[i + 1]
                     i += 2
+                elif args[i] in ["--force", "-f"]:
+                    force = True
+                    i += 1
+                elif args[i] == "--workers" and i + 1 < len(args):
+                    workers = int(args[i + 1])
+                    i += 2
                 else:
                     i += 1
 
             # 获取发布目录
             release_dir = self.context.release_dir
+            if force and release_dir.exists():
+                # 清空目录
+                import shutil
+
+                for item in release_dir.iterdir():
+                    if item.is_file():
+                        item.unlink()
+                    elif item.is_dir():
+                        shutil.rmtree(item)
+                EventEmitter.log("info", f"Cleared release directory: {release_dir}")
             release_dir.mkdir(parents=True, exist_ok=True)
 
             # 执行git pull（规范要求）
-            if not git_pull(self.repo_root, remote="origin", branch="main"):
-                EventEmitter.error("Git pull失败，中止release操作")
+            try:
+                if not git_pull(self.repo_root, remote="origin", branch="main"):
+                    error_msg = "Git pull失败"
+                    EventEmitter.error(error_msg, {"operation": "git_pull", "remote": "origin", "branch": "main"})
+                    # release命令使用continue策略，记录错误但继续执行
+                    return iter([])
+            except Exception as e:
+                error_msg = f"Git pull异常: {str(e)}"
+                EventEmitter.error(error_msg, {"exception": str(e)})
+                # release命令使用continue策略，记录错误但继续执行
                 return iter([])
 
             # 调用库函数
-            entries_to_process, error_msg = release_cmd.release_logic(
-                metadata_mgr=ctx.metadata_mgr,
-                object_store=self.object_store,
-                release_dir=release_dir,
-                mode=mode,
-                conflict_strategy=conflict_strategy,
-                limit=limit,
-                line_filter=line_filter,
-                hash_filter=hash_filter,
-                search_filter=search_filter,
-                dry_run=dry_run,
-            )
+            try:
+                entries_to_process, error_msg = release_cmd.release_logic(
+                    metadata_mgr=ctx.metadata_mgr,
+                    object_store=self.object_store,
+                    release_dir=release_dir,
+                    mode=mode,
+                    conflict_strategy=conflict_strategy,
+                    limit=limit,
+                    line_filter=line_filter,
+                    hash_filter=hash_filter,
+                    search_filter=search_filter,
+                    dry_run=dry_run,
+                )
 
-            if error_msg:
-                EventEmitter.error(f"Release逻辑失败: {error_msg}")
-                return iter([])
+                if error_msg:
+                    EventEmitter.error(f"Release逻辑失败: {error_msg}", {"error_type": "release_logic", "error_msg": error_msg})
+                    # release命令使用continue策略，记录错误但继续执行
+                    entries_to_process = []  # 使用空列表继续处理
+            except Exception as e:
+                error_msg = f"Release逻辑异常: {str(e)}"
+                EventEmitter.error(error_msg, {"exception": str(e), "operation": "release_logic"})
+                # release命令使用continue策略，记录错误但继续执行
+                entries_to_process = []  # 使用空列表继续处理
 
             # 如果是干跑模式，输出结果但不执行
             if dry_run:
@@ -928,14 +1004,36 @@ class GitMusicCLI:
                     EventEmitter.batch_progress("generate", current, total)
 
             # 执行发布
-            success_count, total_count = release_cmd.execute_release(
-                entries=entries_to_process,
-                object_store=self.object_store,
-                release_dir=release_dir,
-                conflict_strategy=conflict_strategy,
-                incremental=(mode == "incremental"),
-                progress_callback=progress_callback,
-            )
+            try:
+                success_count, total_count = release_cmd.execute_release(
+                    entries=entries_to_process,
+                    object_store=self.object_store,
+                    release_dir=release_dir,
+                    conflict_strategy=conflict_strategy,
+                    incremental=(mode == "incremental"),
+                    progress_callback=progress_callback,
+                )
+            except Exception as e:
+                # 对于release命令，使用continue策略，记录错误但不停止
+                error_msg = f"Release执行失败: {str(e)}"
+                EventEmitter.error(error_msg, {"exception": str(e)})
+                
+                # 返回部分结果
+                artifacts = {
+                    "total_entries": len(entries_to_process),
+                    "successful": 0,
+                    "failed": len(entries_to_process),
+                    "release_dir": str(release_dir),
+                    "mode": mode,
+                    "error": error_msg,
+                }
+                
+                EventEmitter.result(
+                    "error",
+                    message=error_msg,
+                    artifacts=artifacts,
+                )
+                return iter([])
 
             # 返回结果
             artifacts = {
@@ -962,16 +1060,12 @@ class GitMusicCLI:
                     f"{success_count} files",
                     "success" if success_count == total_count else "partial",
                     f"{ctx.elapsed():.1f}s",
-                    str(release_dir)
+                    str(release_dir),
                 )
 
                 if total_count - success_count > 0:
                     table.add_row(
-                        "2",
-                        f"{total_count - success_count} files",
-                        "failed",
-                        "-",
-                        "-"
+                        "2", f"{total_count - success_count} files", "failed", "-", "-"
                     )
 
                 console.print(table)
@@ -983,6 +1077,7 @@ class GitMusicCLI:
                     artifacts=artifacts,
                 )
             else:
+                # 部分成功，根据策略这可能是可以接受的
                 EventEmitter.result(
                     "warn",
                     message=f"Generated {success_count}/{total_count} release files",
@@ -996,7 +1091,7 @@ class GitMusicCLI:
             desc="生成发布文件",
             steps=[sync_step, verify_step, release_step],
             requires_lock=True,
-            on_error="stop",
+            on_error="continue",
         )
 
         self.register_command(
@@ -1016,11 +1111,15 @@ class GitMusicCLI:
             quality = 85
             max_width = 800
             min_size_kb = 500
+            size_param = None
             args = ctx.args
 
             i = 0
             while i < len(args):
-                if args[i] == "--quality" and i + 1 < len(args):
+                if args[i] == "--size" and i + 1 < len(args):
+                    size_param = args[i + 1]
+                    i += 2
+                elif args[i] == "--quality" and i + 1 < len(args):
                     quality = int(args[i + 1])
                     i += 2
                 elif args[i] == "--max-width" and i + 1 < len(args):
@@ -1032,12 +1131,39 @@ class GitMusicCLI:
                 else:
                     i += 1
 
+            # 解析--size参数（支持单位：kb, mb, gb，默认kb）
+            if size_param:
+                size_param = size_param.lower().strip()
+                unit = "kb"
+                if size_param.endswith("kb"):
+                    size_val = size_param[:-2]
+                    unit = "kb"
+                elif size_param.endswith("mb"):
+                    size_val = size_param[:-2]
+                    unit = "mb"
+                elif size_param.endswith("gb"):
+                    size_val = size_param[:-2]
+                    unit = "gb"
+                else:
+                    size_val = size_param
+                    unit = "kb"
+
+                try:
+                    size_num = float(size_val)
+                    if unit == "kb":
+                        min_size_kb = int(size_num)
+                    elif unit == "mb":
+                        min_size_kb = int(size_num * 1024)
+                    elif unit == "gb":
+                        min_size_kb = int(size_num * 1024 * 1024)
+                except ValueError:
+                    EventEmitter.error(f"Invalid size value: {size_param}")
+                    return iter([])
+
             # 调用库函数
             entries_to_compress, error_msg = compress_cmd.compress_images_logic(
                 metadata_mgr=ctx.metadata_mgr,
                 object_store=self.object_store,
-                quality=quality,
-                max_width=max_width,
                 min_size_kb=min_size_kb,
             )
 
@@ -1086,8 +1212,6 @@ class GitMusicCLI:
                 entries_to_compress=entries_to_compress,
                 metadata_mgr=ctx.metadata_mgr,
                 object_store=self.object_store,
-                quality=quality,
-                max_width=max_width,
                 progress_callback=progress_callback,
             )
 
@@ -1095,8 +1219,6 @@ class GitMusicCLI:
             artifacts = {
                 "total_entries": total_count,
                 "updated": updated_count,
-                "quality": quality,
-                "max_width": max_width,
                 "min_size_kb": min_size_kb,
             }
 
@@ -1134,7 +1256,9 @@ class GitMusicCLI:
             search_field = None
             missing_fields = None
             fields_to_extract = None
+            filter_fields = None
             line_filter = None
+            limit = 10  # 默认值，根据规范
             mode = "search"  # 'search', 'stats', 'duplicates'
             args = ctx.args
 
@@ -1152,8 +1276,14 @@ class GitMusicCLI:
                 elif args[i] == "--fields" and i + 1 < len(args):
                     fields_to_extract = args[i + 1]
                     i += 2
+                elif args[i] == "--filter" and i + 1 < len(args):
+                    filter_fields = args[i + 1]
+                    i += 2
                 elif args[i] == "--line" and i + 1 < len(args):
                     line_filter = args[i + 1]
+                    i += 2
+                elif args[i] == "--limit" and i + 1 < len(args):
+                    limit = int(args[i + 1])
                     i += 2
                 elif args[i] == "--mode" and i + 1 < len(args):
                     mode = args[i + 1]
@@ -1168,7 +1298,9 @@ class GitMusicCLI:
                 search_field=search_field,
                 missing_fields=missing_fields,
                 fields_to_extract=fields_to_extract,
+                filter_fields=filter_fields,
                 line_filter=line_filter,
+                limit=limit,
                 mode=mode,
             )
 
@@ -1181,6 +1313,7 @@ class GitMusicCLI:
                 entries=entries,
                 analysis_results=analysis_results,
                 mode=mode,
+                limit=limit,
             )
 
             return iter([])
@@ -1201,6 +1334,7 @@ class GitMusicCLI:
             batch_file = None
             no_cover = False
             metadata_only = False
+            no_preview = False
             limit = None
             args = ctx.args
 
@@ -1212,8 +1346,11 @@ class GitMusicCLI:
                 elif args[i] == "--no-cover":
                     no_cover = True
                     i += 1
-                elif args[i] == "--metadata-only":
+                elif args[i] == "--metadata-only" or args[i] == "--fetch":
                     metadata_only = True
+                    i += 1
+                elif args[i] == "--no-preview":
+                    no_preview = True
                     i += 1
                 elif args[i] == "--limit" and i + 1 < len(args):
                     limit = int(args[i + 1])
@@ -1259,6 +1396,7 @@ class GitMusicCLI:
                     output_dir=work_dir,
                     extract_cover=not no_cover,
                     metadata_only=metadata_only,
+                    no_preview=no_preview,
                     limit=limit,
                 )
             )
@@ -1320,8 +1458,30 @@ class GitMusicCLI:
         if len(self.recent_events) > 20:
             self.recent_events.pop(0)
 
-        # 更新统计信息
+        # 收集错误信息（用于错误汇总）
         etype = event.get("type")
+        if etype == "error":
+            error_info = {
+                "type": "event_error",
+                "message": event.get("message", ""),
+                "context": event.get("context", {}),
+                "timestamp": event.get("ts", "")
+            }
+            if hasattr(self, 'command_errors'):
+                self.command_errors.append(error_info)
+        elif etype == "item_event":
+            status = event.get("status", "")
+            if status == "error":
+                error_info = {
+                    "type": "item_error",
+                    "item_id": event.get("id", ""),
+                    "message": event.get("message", ""),
+                    "timestamp": event.get("ts", "")
+                }
+                if hasattr(self, 'command_errors'):
+                    self.command_errors.append(error_info)
+
+        # 更新统计信息
         if etype == "item_event":
             self.summary_stats["items_processed"] = (
                 self.summary_stats.get("items_processed", 0) + 1
@@ -1346,13 +1506,124 @@ class GitMusicCLI:
             current_time = datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
             total_items = event.get("total_items", 0)
             # 获取当前命令名（从事件或上下文）
-            command_name = event.get("command", self.summary_stats.get("current_command", "unknown"))
+            command_name = event.get(
+                "command", self.summary_stats.get("current_command", "unknown")
+            )
             # 仅在非log-only模式显示Header行
             if not self.log_only:
-                console.print(f"[bold cyan]{current_time} | {command_name} | phase={phase} | total={total_items} | status=running[/bold cyan]")
+                console.print(
+                    f"[bold cyan]{current_time} | {command_name} | phase={phase} | total={total_items} | status=running[/bold cyan]"
+                )
         elif etype == "batch_progress":
             # 更新进度
             pass
+
+    def _execute_steps_with_error_handling(self, cmd, ctx):
+        """根据on_error策略执行步骤链"""
+        if len(cmd.steps) > 1:
+            # 链式执行：每个步骤的输出作为下一个步骤的输入
+            current_iter = None
+            for i, step in enumerate(cmd.steps):
+                try:
+                    if i == 0:
+                        # 第一个步骤
+                        result = step(ctx, None)
+                        if hasattr(result, "__iter__"):
+                            current_iter = result
+                        else:
+                            # 包装为单元素迭代器
+                            def single_item():
+                                if result is not None:
+                                    yield result
+                            current_iter = single_item()
+                    else:
+                        # 后续步骤使用前一个步骤的输出
+                        if current_iter is not None:
+                            current_iter = step(ctx, current_iter)
+                except Exception as e:
+                    # 步骤执行异常，根据on_error策略处理
+                    if cmd.on_error == "stop":
+                        # 立即停止并重新抛出异常
+                        raise
+                    else:
+                        # continue或notify：记录错误并继续
+                        error_info = {
+                            "step": i,
+                            "step_name": step.__name__ if hasattr(step, '__name__') else str(step),
+                            "error": str(e),
+                            "type": "step_exception"
+                        }
+                        self.command_errors.append(error_info)
+                        EventEmitter.error(f"步骤 {i} 执行失败: {str(e)}", error_info)
+                        
+                        # 如果是continue或notify，尝试继续执行（返回空迭代器）
+                        if i == 0:
+                            current_iter = iter([])
+                        else:
+                            # 中断管道执行
+                            break
+        else:
+            # 单个步骤
+            try:
+                cmd.steps[0](ctx, None)
+            except Exception as e:
+                # 根据on_error策略处理
+                if cmd.on_error == "stop":
+                    raise
+                else:
+                    # continue或notify：记录错误
+                    error_info = {
+                        "step": 0,
+                        "step_name": cmd.steps[0].__name__ if hasattr(cmd.steps[0], '__name__') else str(cmd.steps[0]),
+                        "error": str(e),
+                        "type": "step_exception"
+                    }
+                    self.command_errors.append(error_info)
+                    EventEmitter.error(f"步骤执行失败: {str(e)}", error_info)
+
+    def _handle_command_exception(self, cmd, exception):
+        """处理命令级别的异常"""
+        error_info = {
+            "type": "command_exception",
+            "error": str(exception),
+            "on_error_strategy": cmd.on_error
+        }
+        
+        if cmd.on_error == "stop":
+            # 立即停止并显示错误
+            if not self.log_only:
+                console.print(f"[red]命令执行错误: {str(exception)}[/red]")
+            EventEmitter.error(f"命令执行失败: {str(exception)}", error_info)
+            raise  # 重新抛出，中止执行
+        else:
+            # continue或notify：记录错误但不停止
+            self.command_errors.append(error_info)
+            EventEmitter.error(f"命令执行错误（继续执行）: {str(exception)}", error_info)
+            if not self.log_only:
+                console.print(f"[yellow]命令执行错误（按{cmd.on_error}策略继续）: {str(exception)}[/yellow]")
+
+    def _display_error_summary(self):
+        """显示错误汇总"""
+        if not self.command_errors:
+            return
+            
+        from rich.table import Table
+        
+        table = Table(title=f"错误汇总 ({len(self.command_errors)} 个错误)", show_lines=True)
+        table.add_column("类型", style="red")
+        table.add_column("步骤", style="yellow")
+        table.add_column("错误信息", style="white")
+        
+        for error in self.command_errors:
+            error_type = error.get("type", "unknown")
+            step_info = str(error.get("step", "-"))
+            if "step_name" in error:
+                step_info = f"{error['step_name']} (步骤{error.get('step', '?')})"
+            
+            error_msg = error.get("error", "未知错误")
+            table.add_row(error_type, step_info, error_msg)
+        
+        console.print(table)
 
     def _display_summary(self):
         """显示命令执行摘要"""
@@ -1375,6 +1646,7 @@ class GitMusicCLI:
         logfile_info = "未记录"
         try:
             from libgitmusic.events import EventEmitter
+
             if EventEmitter._log_file is not None:
                 logfile_path = EventEmitter._log_file.name
                 logfile_info = str(Path(logfile_path).relative_to(self.project_root))
@@ -1391,10 +1663,7 @@ class GitMusicCLI:
 
         # 使用rich.Panel显示摘要
         summary_panel = Panel(
-            summary_content,
-            title="执行摘要",
-            border_style="green",
-            padding=(1, 2)
+            summary_content, title="执行摘要", border_style="green", padding=(1, 2)
         )
 
         console.print(summary_panel)
@@ -1434,6 +1703,9 @@ class GitMusicCLI:
         self.event_log.clear()
         self.recent_events.clear()
         self.summary_stats.clear()
+        
+        # 重置错误收集
+        self.command_errors = []
 
         # 注册事件监听器
         from libgitmusic.events import EventEmitter
@@ -1448,7 +1720,9 @@ class GitMusicCLI:
         # 显示Header行（符合视觉规范，仅在非log-only模式）
         if not self.log_only:
             current_time = datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
-            console.print(f"[bold cyan]{current_time} | {name} | phase=start | total=0 | status=running[/bold cyan]")
+            console.print(
+                f"[bold cyan]{current_time} | {name} | phase=start | total=0 | status=running[/bold cyan]"
+            )
 
         # 保存当前命令名到统计信息中，供事件处理使用
         self.summary_stats["current_command"] = name
@@ -1490,30 +1764,8 @@ class GitMusicCLI:
                 if not self.log_only:
                     console.print(f"[bold cyan]执行命令: {name}[/bold cyan]")
 
-                # 如果有多个步骤，按顺序执行管道
-                if len(cmd.steps) > 1:
-                    # 链式执行：每个步骤的输出作为下一个步骤的输入
-                    current_iter = None
-                    for i, step in enumerate(cmd.steps):
-                        if i == 0:
-                            # 第一个步骤
-                            result = step(ctx, None)
-                            if hasattr(result, "__iter__"):
-                                current_iter = result
-                            else:
-                                # 包装为单元素迭代器
-                                def single_item():
-                                    if result is not None:
-                                        yield result
-
-                                current_iter = single_item()
-                        else:
-                            # 后续步骤使用前一个步骤的输出
-                            if current_iter is not None:
-                                current_iter = step(ctx, current_iter)
-                else:
-                    # 单个步骤
-                    cmd.steps[0](ctx, None)
+                # 根据on_error策略执行步骤
+                self._execute_steps_with_error_handling(cmd, ctx)
 
                 if not self.log_only:
                     console.print(f"[green]命令执行完成: {name}[/green]")
@@ -1526,12 +1778,15 @@ class GitMusicCLI:
                 console.print("[yellow]命令被用户中断[/yellow]")
             EventEmitter.error("cancelled by user", {"command": name})
         except Exception as e:
-            if not self.log_only:
-                console.print(f"[red]命令执行错误: {str(e)}[/red]")
+            # 根据on_error策略处理异常
+            self._handle_command_exception(cmd, e)
         finally:
             # 显示摘要（仅在非log-only模式）
             if not self.log_only:
                 self._display_summary()
+                # 显示错误汇总（如果有错误且on_error不是stop）
+                if self.command_errors and cmd.on_error in ["continue", "notify"]:
+                    self._display_error_summary()
             # 注销事件监听器
             from libgitmusic.events import EventEmitter
 
@@ -1633,18 +1888,19 @@ def main():
 
     # 修复控制台编码问题，确保在bash等环境中中文正常显示
     # 设置环境变量作为第一层保障
-    os.environ['PYTHONIOENCODING'] = 'utf-8'
+    os.environ["PYTHONIOENCODING"] = "utf-8"
 
     try:
         # Python 3.7+ 支持reconfigure方法，直接设置stdout/stderr编码
-        sys.stdout.reconfigure(encoding='utf-8')
-        sys.stderr.reconfigure(encoding='utf-8')
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
     except (AttributeError, Exception):
         # 对于不支持reconfigure的Python版本，使用TextIOWrapper包装
         try:
             import io
-            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
         except Exception:
             # 如果所有方法都失败，至少环境变量应该能起作用
             pass
@@ -1666,6 +1922,7 @@ def main():
     if args.logs_dir:
         cli.context.logs_dir = Path(args.logs_dir).resolve()
         from libgitmusic.events import EventEmitter
+
         EventEmitter.setup_logging(logs_dir=cli.context.logs_dir, log_only=cli.log_only)
 
     if args.command:

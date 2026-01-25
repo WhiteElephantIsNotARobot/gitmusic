@@ -1,9 +1,30 @@
 from pathlib import Path
+import shutil
+from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 from ..events import EventEmitter
 from ..hash_utils import HashUtils
 from ..metadata import MetadataManager
 from ..audio import AudioIO
+
+
+def move_to_trash(file_path: Path, trash_root: Path) -> bool:
+    """
+    将文件移动到回收站目录
+    """
+    try:
+        # 确保回收站目录存在
+        trash_root.mkdir(parents=True, exist_ok=True)
+        # 生成唯一文件名（避免冲突）
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        unique_name = f"{timestamp}_{file_path.name}"
+        trash_path = trash_root / unique_name
+        shutil.move(str(file_path), str(trash_path))
+        EventEmitter.log("info", f"Moved {file_path} to trash: {trash_path}")
+        return True
+    except Exception as e:
+        EventEmitter.error(f"Failed to move {file_path} to trash: {str(e)}")
+        return False
 
 
 def verify_local_cache(
@@ -165,6 +186,7 @@ def verify_logic(
     custom_path: Optional[Path] = None,
     release_dir: Optional[Path] = None,
     audio_oids: Optional[List[str]] = None,
+    delete: bool = False,
 ) -> int:
     """
     Verify 命令的核心业务逻辑
@@ -202,6 +224,7 @@ def verify_logic(
     if errors:
         # 构建条目列表供CLI显示
         entries = []
+        files_deleted = 0
         for error_item in errors:
             if len(error_item) == 3:
                 filename, hash_info, entry_info = error_item
@@ -233,15 +256,55 @@ def verify_logic(
                 }
             )
 
+            # 如果启用了删除功能，将文件移动到回收站
+            if delete:
+                file_path = None
+                if mode == "release" and release_dir:
+                    # release模式：文件在release_dir下
+                    file_path = release_dir / filename
+                elif mode == "local" and cache_root:
+                    # local模式：根据哈希查找文件
+                    hex_hash = hash_info if not entry_info else hash_info.split(":")[1]
+                    # 尝试在objects和covers目录下查找
+                    objects_dir = cache_root / "objects" / "sha256"
+                    covers_dir = cache_root / "covers" / "sha256"
+                    # 检查文件是否存在
+                    subdir = hex_hash[:2]
+                    possible_paths = [
+                        objects_dir / subdir / f"{hex_hash}.mp3",
+                        covers_dir / subdir / f"{hex_hash}.jpg",
+                    ]
+                    for path in possible_paths:
+                        if path.exists():
+                            file_path = path
+                            break
+                elif custom_path:
+                    # custom_path模式：文件在custom_path下
+                    file_path = custom_path / filename
+
+                if file_path and file_path.exists():
+                    # 确定回收站目录（使用metadata_file父目录下的.trash）
+                    trash_root = metadata_file.parent / ".trash"
+                    if move_to_trash(file_path, trash_root):
+                        files_deleted += 1
+                        EventEmitter.log("info", f"Deleted file: {file_path}")
+                    else:
+                        EventEmitter.log("warn", f"Failed to delete file: {file_path}")
+
+        result_message = f"Verification failed for {len(errors)} files"
+        if delete:
+            result_message += f", {files_deleted} files moved to trash"
+
         EventEmitter.result(
             "error",
-            message=f"Verification failed for {len(errors)} files",
+            message=result_message,
             artifacts={
                 "failed_files": [x[0] for x in errors],  # 保持向后兼容
                 "details": errors,  # 保持向后兼容
                 "entries": entries,  # 新增，供CLI格式化显示
                 "count": len(errors),
                 "truncated": False,
+                "files_deleted": files_deleted,
             },
         )
         return 1

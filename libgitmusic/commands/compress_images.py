@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 
 from ..events import EventEmitter
 from ..audio import AudioIO
@@ -11,8 +11,6 @@ from ..hash_utils import HashUtils
 def compress_images_logic(
     metadata_mgr: MetadataManager,
     object_store: ObjectStore,
-    quality: int = 85,
-    max_width: int = 800,
     min_size_kb: int = 500,
 ) -> Tuple[List[Dict], Optional[str]]:
     """
@@ -21,8 +19,6 @@ def compress_images_logic(
     Args:
         metadata_mgr: 元数据管理器
         object_store: 对象存储
-        quality: JPEG压缩质量 (1-100)
-        max_width: 最大宽度
         min_size_kb: 最小文件大小（KB）
 
     Returns:
@@ -89,8 +85,6 @@ def execute_compress_images(
     entries_to_compress: List[Dict],
     metadata_mgr: MetadataManager,
     object_store: ObjectStore,
-    quality: int = 85,
-    max_width: int = 800,
     progress_callback=None,
 ) -> Tuple[int, int]:
     """
@@ -100,8 +94,6 @@ def execute_compress_images(
         entries_to_compress: 需要压缩的条目列表
         metadata_mgr: 元数据管理器
         object_store: 对象存储
-        quality: JPEG压缩质量 (1-100)
-        max_width: 最大宽度
         progress_callback: 进度回调函数
 
     Returns:
@@ -124,12 +116,12 @@ def execute_compress_images(
             cover_path.name, "compressing", f"Original: {len(original_data)} bytes"
         )
 
-        # 压缩封面
+        # 压缩封面（使用默认参数：质量85，最大宽度800）
         try:
             compressed_data = AudioIO.compress_cover(
                 original_data,
-                max_width=max_width,
-                quality=quality,
+                max_width=800,
+                quality=85,
             )
         except Exception as e:
             EventEmitter.error(

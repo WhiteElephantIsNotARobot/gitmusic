@@ -1,6 +1,7 @@
 import os
 import json
 import hashlib
+import concurrent.futures
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime
@@ -251,6 +252,8 @@ def release_logic(
     hash_filter: Optional[str] = None,
     search_filter: Optional[str] = None,
     dry_run: bool = False,
+    force: bool = False,
+    workers: int = 1,
 ) -> Tuple[List[Dict], Optional[str]]:
     """
     Release命令的核心业务逻辑
@@ -372,6 +375,7 @@ def execute_release(
     conflict_strategy: str = "suffix",
     incremental: bool = False,
     progress_callback=None,
+    workers: int = 1,
 ) -> Tuple[int, int]:
     """
     执行真正的发布动作
@@ -394,21 +398,55 @@ def execute_release(
     EventEmitter.phase_start("generate", total_items=len(entries))
 
     success_count = 0
-    for i, entry in enumerate(entries):
-        success = process_single_entry(
-            entry,
-            object_store,
-            release_dir,
-            conflict_strategy,
-            incremental=incremental,
-        )
+    total_entries = len(entries)
 
-        if success:
-            success_count += 1
+    if workers <= 1:
+        # 串行处理
+        for i, entry in enumerate(entries):
+            success = process_single_entry(
+                entry,
+                object_store,
+                release_dir,
+                conflict_strategy,
+                incremental=incremental,
+            )
 
-        EventEmitter.batch_progress("generate", i + 1, len(entries))
+            if success:
+                success_count += 1
 
-        if progress_callback:
-            progress_callback(i + 1, len(entries))
+            EventEmitter.batch_progress("generate", i + 1, total_entries)
 
-    return success_count, len(entries)
+            if progress_callback:
+                progress_callback(i + 1, total_entries)
+    else:
+        # 并行处理
+        def process_entry_wrapper(entry):
+            return process_single_entry(
+                entry,
+                object_store,
+                release_dir,
+                conflict_strategy,
+                incremental=incremental,
+            )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = []
+            for entry in entries:
+                future = executor.submit(process_entry_wrapper, entry)
+                futures.append(future)
+
+            # 等待所有任务完成，并更新进度
+            completed = 0
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    success = future.result()
+                    if success:
+                        success_count += 1
+                except Exception as e:
+                    EventEmitter.error(f"Error processing entry: {str(e)}")
+                completed += 1
+                EventEmitter.batch_progress("generate", completed, total_entries)
+                if progress_callback:
+                    progress_callback(completed, total_entries)
+
+    return success_count, total_entries

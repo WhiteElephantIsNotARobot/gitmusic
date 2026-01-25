@@ -191,7 +191,9 @@ def analyze_logic(
     search_field: Optional[str] = None,
     missing_fields: Optional[str] = None,
     fields_to_extract: Optional[str] = None,
+    filter_fields: Optional[str] = None,
     line_filter: Optional[str] = None,
+    limit: int = 10,
     mode: str = "search",  # 'search', 'stats', 'duplicates'
 ) -> Tuple[List[Dict], Dict[str, Any], Optional[str]]:
     """
@@ -203,7 +205,9 @@ def analyze_logic(
         search_field: 指定搜索字段
         missing_fields: 缺失字段过滤（逗号分隔）
         fields_to_extract: 提取字段（逗号分隔）
+        filter_fields: 输出过滤字段（逗号分隔）
         line_filter: 行号过滤器
+        limit: 输出数量限制
         mode: 分析模式 ('search', 'stats', 'duplicates')
 
     Returns:
@@ -329,6 +333,19 @@ def analyze_logic(
                 "info", f"Extracted specified fields from {len(all_entries)} entries"
             )
 
+        # 过滤字段（输出时过滤）
+        if filter_fields:
+            filter_list = [f.strip() for f in filter_fields.split(",")]
+            all_entries = extract_fields(all_entries, filter_list)
+            EventEmitter.log(
+                "info", f"Filtered to specified fields for {len(all_entries)} entries"
+            )
+
+        # 限制数量
+        if limit > 0 and limit < len(all_entries):
+            all_entries = all_entries[:limit]
+            EventEmitter.log("info", f"Limited output to {limit} entries")
+
         return all_entries, {}, None
 
 
@@ -336,6 +353,7 @@ def execute_analyze(
     entries: List[Dict],
     analysis_results: Dict[str, Any],
     mode: str = "search",
+    limit: int = 100,
     progress_callback=None,
 ) -> None:
     """
@@ -345,6 +363,7 @@ def execute_analyze(
         entries: 过滤后的条目
         analysis_results: 分析结果
         mode: 分析模式
+        limit: 输出数量限制
         progress_callback: 进度回调函数
     """
     if mode == "duplicates":
@@ -379,8 +398,8 @@ def execute_analyze(
         else:
             artifacts = {
                 "count": len(entries),
-                "entries": entries[:100],  # 限制输出数量
-                "truncated": len(entries) > 100,
+                "entries": entries[:limit],  # 限制输出数量
+                "truncated": len(entries) > limit,
             }
 
             EventEmitter.result(

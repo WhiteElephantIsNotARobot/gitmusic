@@ -38,7 +38,7 @@ def fetch_metadata(url: str) -> Optional[Dict]:
 
 
 def download_audio(
-    url: str, output_dir: Path, extract_cover: bool = True
+    url: str, output_dir: Path, extract_cover: bool = True, no_preview: bool = False
 ) -> Tuple[Optional[Path], Optional[Dict]]:
     """
     下载音频并返回文件路径和元数据
@@ -47,6 +47,7 @@ def download_audio(
         url: 视频URL
         output_dir: 输出目录
         extract_cover: 是否提取封面
+        no_preview: 是否隐藏预览信息
 
     Returns:
         (文件路径, 元数据字典) 或 (None, None) 如果失败
@@ -68,7 +69,8 @@ def download_audio(
             url,
         ]
 
-        EventEmitter.item_event(url, "downloading")
+        if not no_preview:
+            EventEmitter.item_event(url, "downloading")
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
 
         # 查找下载的文件
@@ -169,6 +171,7 @@ def download_logic(
     output_dir: Path,
     extract_cover: bool = True,
     metadata_only: bool = False,
+    no_preview: bool = False,
     limit: Optional[int] = None,
 ) -> Tuple[List[Dict], List[str], Optional[str]]:
     """
@@ -179,6 +182,7 @@ def download_logic(
         output_dir: 输出目录
         extract_cover: 是否提取封面
         metadata_only: 是否仅获取元数据
+        no_preview: 是否隐藏预览信息
         limit: 最大下载数量
 
     Returns:
@@ -194,16 +198,18 @@ def download_logic(
         metadata_list = []
 
         for i, url in enumerate(urls):
-            EventEmitter.item_event(url, "fetching_metadata")
+            if not no_preview:
+                EventEmitter.item_event(url, "fetching_metadata")
             metadata = fetch_metadata(url)
 
             if metadata:
                 metadata_list.append(metadata)
-                EventEmitter.item_event(
-                    url,
-                    "metadata_fetched",
-                    f"Title: {metadata.get('title', 'Unknown')}",
-                )
+                if not no_preview:
+                    EventEmitter.item_event(
+                        url,
+                        "metadata_fetched",
+                        f"Title: {metadata.get('title', 'Unknown')}",
+                    )
             else:
                 EventEmitter.item_event(
                     url, "metadata_failed", "Failed to fetch metadata"
@@ -221,10 +227,11 @@ def download_logic(
         failed_downloads = []
 
         for i, url in enumerate(urls):
-            EventEmitter.item_event(url, "processing")
+            if not no_preview:
+                EventEmitter.item_event(url, "processing")
 
             file_path, metadata = download_audio(
-                url, output_dir, extract_cover=extract_cover
+                url, output_dir, extract_cover=extract_cover, no_preview=no_preview
             )
 
             if file_path and metadata:
