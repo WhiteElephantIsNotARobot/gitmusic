@@ -1,0 +1,72 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^ssh\\s+[A-Za-z0-9._-]+@[A-Za-z0-9._-]+\\s+\\\"(?!.+(&&|;|\\||\\|\\||`|\\$\\(|>|<))ls(\\s+-la)?(\\s+[^\\\" ]*)?\\\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^ssh\\s+[A-Za-z0-9._-]+@[A-Za-z0-9._-]+\\s+\\\"(?!.+(&&|;|\\||\\|\\||`|\\$\\(|>|<))pwd\\\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^ssh\\s+[A-Za-z0-9._-]+@[A-Za-z0-9._-]+\\s+\\\"(?!.+(&&|;|\\||\\|\\||`|\\$\\(|>|<))cat\\s+[^.][^\\\" ]*\\\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^ssh\\s+[A-Za-z0-9._-]+@[A-Za-z0-9._-]+\\s+\\\"(?!.+(&&|;|\\||\\|\\||`|\\$\\(|>|<))tree(\\s+[^\\\"]*)?\\\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^ssh\\s+[A-Za-z0-9._-]+@[A-Za-z0-9._-]+\\s+\\\"(?!.+(&&|;|\\||\\|\\||`|\\$\\(|>|<))whoami\\\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^ssh\\s+[A-Za-z0-9._-]+@[A-Za-z0-9._-]+\\s+\\\"(?!.+(&&|;|\\||\\|\\||`|\\$\\(|>|<))uname(\\s+-a)?\\\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^ssh\\s+[A-Za-z0-9._-]+@[A-Za-z0-9._-]+\\s+\\\"(?!.+(&&|;|\\||\\|\\||`|\\$\\(|>|<))df(\\s+-h)?\\\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^ssh\\s+[A-Za-z0-9._-]+@[A-Za-z0-9._-]+\\s+\\\"(?!.+(&&|;|\\||\\|\\||`|\\$\\(|>|<))du\\s+-sh\\s+[^\\\"]+\\\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^ssh\\s+[A-Za-z0-9._-]+@[A-Za-z0-9._-]+\\s+\\\"(?!.+(&&|;|\\||\\|\\||`|\\$\\(|>|<))free(\\s+-h)?\\\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^ssh\\s+[A-Za-z0-9._-]+@[A-Za-z0-9._-]+\\s+\\\"(?!.+(&&|;|\\||\\|\\||`|\\$\\(|>|<))ps(\\s+aux)?\\\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^ssh\\s+[A-Za-z0-9._-]+@[A-Za-z0-9._-]+\\s+\\\"(?!.+(&&|;|\\||\\|\\||`|\\$\\(|>|<))top\\s+-b\\s+-n\\s+1\\\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^ssh\\s+[A-Za-z0-9._-]+@[A-Za-z0-9._-]+\\s+\\\"(?!.+(&&|;|\\||\\|\\||`|\\$\\(|>|<))git\\s+status\\\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^ssh\\s+[A-Za-z0-9._-]+@[A-Za-z0-9._-]+\\s+\\\"(?!.+(&&|;|\\||\\|\\||`|\\$\\(|>|<))git\\s+log(\\s+[^\\\"]*)?\\\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^ssh\\s+[A-Za-z0-9._-]+@[A-Za-z0-9._-]+\\s+\\\"(?!.+(&&|;|\\||\\|\\||`|\\$\\(|>|<))git\\s+diff(\\s+[^\\\"]*)?\\\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^ssh\\s+[A-Za-z0-9._-]+@[A-Za-z0-9._-]+\\s+\\\"(?!.+(&&|;|\\||\\|\\||`|\\$\\(|>|<))git\\s+show(\\s+[^\\\"]*)?\\\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^C:/Users/white/Documents/gitmusic/\\.venv/Scripts/python\\.exe -m py_compile c:/Users/white/Documents/gitmusic/repo/libgitmusic/audio\\.py c:/Users/white/Documents/gitmusic/repo/libgitmusic/metadata\\.py c:/Users/white/Documents/gitmusic/repo/libgitmusic/transport\\.py c:/Users/white/Documents/gitmusic/repo/libgitmusic/events\\.py c:/Users/white/Documents/gitmusic/repo/tools/cli\\.py c:/Users/white/Documents/gitmusic/repo/work/publish_meta\\.py c:/Users/white/Documents/gitmusic/repo/work/checkout\\.py c:/Users/white/Documents/gitmusic/repo/release/create_release\\.py c:/Users/white/Documents/gitmusic/repo/data/sync_cache\\.py c:/Users/white/Documents/gitmusic/repo/data/verify_hashes\\.py c:/Users/white/Documents/gitmusic/repo/data/cleanup_orphaned\\.py c:/Users/white/Documents/gitmusic/repo/tools/analyze_metadata\\.py c:/Users/white/Documents/gitmusic/repo/tools/analyze_duplicates\\.py c:/Users/white/Documents/gitmusic/repo/tools/download_ytdlp\\.py$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^\\.\\\\gitmusic\\.ps1 help$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}

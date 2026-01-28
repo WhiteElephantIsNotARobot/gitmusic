@@ -1,9 +1,8 @@
-# 数据目录
-work/
-release/
-logs/
-cache/
-archive/
+# 数据目录（根目录）
+/work/
+/release/
+/logs/
+/cache/
 .temp/
 
 # 虚拟环境和缓存
@@ -29,14 +28,16 @@ integration_test_summary.md
 .DS_Store
 Thumbs.db
 
-# repo目录中的.git（子模块）
-repo/.git
+# repo目录中的.git（子模块）- 已删除
 
 # Python编译文件
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+
+# 测试数据文件
+/tests/integration/data/*.mp3
 
 # 其他临时文件
 *.tmp
@@ -46,5 +47,8 @@ __pycache__/
 
 # 项目特定忽略
 # repo目录中的合并文件（已在repo/.gitignore中定义）
-repo/all_python_files_merged.md
-repo/merge_py_files.py
+/repo/all_python_files_merged.md
+/repo/merge_py_files.py
+# repo目录中的缓存和日志
+repo/cache/
+repo/logs/
