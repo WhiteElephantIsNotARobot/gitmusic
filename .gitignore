@@ -1,0 +1,50 @@
+# 数据目录
+work/
+release/
+logs/
+cache/
+archive/
+.temp/
+
+# 虚拟环境和缓存
+.venv/
+.ruff_cache/
+.pytest_cache/
+.locks/
+.coverage
+.coverage.*
+
+# 配置文件（实际配置，示例配置保留）
+config.yaml
+
+# 日志和测试输出
+test_logonly_output*.txt
+integration_test_report.html
+integration_test_summary.md
+
+# CLI历史
+.cli_history
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# repo目录中的.git（子模块）
+repo/.git
+
+# Python编译文件
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 其他临时文件
+*.tmp
+*.temp
+*.log
+*.pid
+
+# 项目特定忽略
+# repo目录中的合并文件（已在repo/.gitignore中定义）
+repo/all_python_files_merged.md
+repo/merge_py_files.py
