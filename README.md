@@ -2,7 +2,7 @@
 
 **版本**: 2.0  
 **状态**: 生产就绪  
-**许可证**: MIT
+**许可证**: GPL-3.0
 
 GitMusic是一个基于Git对象存储的音频库管理系统，提供完整的音频管理、发布、同步和分发解决方案。
 
@@ -729,7 +729,7 @@ GitMusic提供完整迁移工具链：
 
 ## 许可证
 
-MIT License - 详见 [LICENSE](LICENSE) 文件
+GNU General Public License v3.0 - 详见 [LICENSE](LICENSE) 文件
 
 ## 致谢
 
